@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha1"
 	"encoding/base64"
@@ -11,7 +12,12 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/twilio/twilio-go/twiml"
@@ -38,6 +44,54 @@ func validateTwilioSignature(authToken, signature, url string, params map[string
 	expectedSignature := base64.StdEncoding.EncodeToString(mac.Sum(nil))
 
 	return hmac.Equal([]byte(signature), []byte(expectedSignature))
+}
+
+func uploadRecordingToSupabase(recordingURL, fileName string) error {
+	supabaseURL := os.Getenv("SUPABASE_URL")
+	supabaseKey := os.Getenv("SUPABASE_SERVICE_ROLE_KEY")
+	bucketName := "voice-recording"
+
+	if supabaseURL == "" || supabaseKey == "" {
+		return fmt.Errorf("missing Supabase configuration")
+	}
+
+	cfg, err := config.LoadDefaultConfig(context.TODO(),
+		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("", supabaseKey, "")),
+		config.WithRegion("us-east-1"),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to load config: %v", err)
+	}
+
+	s3Client := s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.BaseEndpoint = aws.String(supabaseURL + "/storage/v1/s3")
+		o.UsePathStyle = true
+	})
+
+	resp, err := http.Get(recordingURL + ".wav")
+	if err != nil {
+		return fmt.Errorf("failed to download recording: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read recording: %v", err)
+	}
+
+	_, err = s3Client.PutObject(context.TODO(), &s3.PutObjectInput{
+		Bucket:      aws.String(bucketName),
+		Key:         aws.String(fileName),
+		Body:        strings.NewReader(string(body)),
+		ContentType: aws.String("audio/wav"),
+		ACL:         "private",
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to upload to Supabase: %v", err)
+	}
+
+	return nil
 }
 
 func twilioAuthMiddleware() echo.MiddlewareFunc {
@@ -107,14 +161,12 @@ func main() {
 		e.Logger.Infof("Call from %s to %s", fromNumber, toNumber)
 
 		record := &twiml.VoiceRecord{
-			Action:             "/twilio/recording-complete",
-			Method:             "POST",
-			Timeout:            "5",
-			MaxLength:          "5",
-			FinishOnKey:        "",
-			Transcribe:         "true",
-			TranscribeCallback: "/twilio/transcription",
-			PlayBeep:           "false",
+			Action:      "/twilio/recording-complete",
+			Method:      "POST",
+			Timeout:     "5",
+			MaxLength:   "5",
+			FinishOnKey: "",
+			PlayBeep:    "false",
 		}
 
 		response, err := twiml.Voice([]twiml.Element{record})
@@ -133,8 +185,26 @@ func main() {
 
 		fromNumber := params["From"]
 		recordingURL := params["RecordingUrl"]
+		recordingSid := params["RecordingSid"]
 
 		e.Logger.Infof("Recording completed from %s, URL: %s", fromNumber, recordingURL)
+
+		timestamp := time.Now().Unix()
+		fileName := fmt.Sprintf("recording_%s_%d.wav", recordingSid, timestamp)
+
+		go func() {
+			err := uploadRecordingToSupabase(recordingURL, fileName)
+			if err != nil {
+				e.Logger.Errorf("Failed to upload recording: %v", err)
+			} else {
+				fmt.Printf("\n📁 RECORDING UPLOADED 📁\n")
+				fmt.Printf("File: %s\n", fileName)
+				fmt.Printf("From: %s\n", fromNumber)
+				fmt.Printf("Recording SID: %s\n", recordingSid)
+				fmt.Printf("========================\n\n")
+				e.Logger.Infof("Recording uploaded successfully: %s", fileName)
+			}
+		}()
 
 		message := fmt.Sprintf("Hello! You've reached a secure Twilio webhook. You are calling from %s. Welcome!", fromNumber)
 		say := &twiml.VoiceSay{Message: message}
@@ -144,27 +214,6 @@ func main() {
 		}
 		c.Response().Header().Set(echo.HeaderContentType, "application/xml")
 		return c.String(http.StatusOK, response)
-	})
-
-	e.POST("/twilio/transcription", func(c echo.Context) error {
-		params, ok := c.Get("twilioParams").(map[string]string)
-		if !ok {
-			return c.String(http.StatusInternalServerError, "Failed to get Twilio parameters")
-		}
-
-		transcriptionText := params["TranscriptionText"]
-		transcriptionStatus := params["TranscriptionStatus"]
-		recordingSid := params["RecordingSid"]
-
-		fmt.Printf("\n🎤 LIVE TRANSCRIPTION 🎤\n")
-		fmt.Printf("Status: %s\n", transcriptionStatus)
-		fmt.Printf("Text: \"%s\"\n", transcriptionText)
-		fmt.Printf("Recording SID: %s\n", recordingSid)
-		fmt.Printf("========================\n\n")
-
-		e.Logger.Infof("Transcription received - SID: %s, Status: %s, Text: %s", recordingSid, transcriptionStatus, transcriptionText)
-
-		return c.String(http.StatusOK, "Transcription received")
 	})
 
 	port := os.Getenv("PORT")
