@@ -45,7 +45,7 @@ func validateTwilioSignature(authToken, signature, url string, params map[string
 func uploadRecordingToSupabase(recordingURL, fileName string) error {
 	supabaseURL := os.Getenv("SUPABASE_URL")
 	supabaseKey := os.Getenv("SUPABASE_SERVICE_ROLE_KEY")
-	bucketName := "voice-recordings"
+	bucketName := "voice-recording"
 
 	if supabaseURL == "" || supabaseKey == "" {
 		return fmt.Errorf("missing Supabase configuration: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY required")
