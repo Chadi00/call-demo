@@ -177,28 +177,18 @@ func main() {
 
 		e.Logger.Infof("Call from %s to %s - starting full call recording", fromNumber, toNumber)
 
-		// Start recording the entire call immediately
-		record := &twiml.VoiceRecord{
-			Action:                        "/twilio/recording-complete",
-			Method:                        "POST",
-			Timeout:                       "0",           // No timeout - record until call ends
-			MaxLength:                     "3600",        // 1 hour max recording
-			FinishOnKey:                   "",            // No key to stop recording
-			PlayBeep:                      "false",       // No beep - silent recording
-			Trim:                          "do-not-trim", // Keep full audio even if silent
-			RecordingStatusCallback:       "/twilio/recording-status",
-			RecordingStatusCallbackMethod: "POST",
-			RecordingStatusCallbackEvent:  "completed failed",
-		}
+		// Build TwiML manually using <Start><Record> so recording covers the entire call
+		rawTwiML := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Start>
+        <Record recordingStatusCallback="/twilio/recording-status" recordingStatusCallbackMethod="POST" recordingStatusCallbackEvent="completed failed" />
+    </Start>
+    <Say>Hello! You are calling from %s. This call is being recorded from start to finish.</Say>
+</Response>`, fromNumber)
 
-		// Welcome message after recording starts
-		welcomeMessage := fmt.Sprintf("Hello! You've reached a secure Twilio webhook. You are calling from %s. This call is being recorded.", fromNumber)
-		say := &twiml.VoiceSay{Message: welcomeMessage}
+		// alias variable so existing return line works
+		response := rawTwiML
 
-		response, err := twiml.Voice([]twiml.Element{record, say})
-		if err != nil {
-			return c.String(http.StatusInternalServerError, "failed to build TwiML")
-		}
 		c.Response().Header().Set(echo.HeaderContentType, "application/xml")
 		return c.String(http.StatusOK, response)
 	})
