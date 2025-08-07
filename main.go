@@ -47,24 +47,30 @@ func validateTwilioSignature(authToken, signature, url string, params map[string
 }
 
 func uploadRecordingToSupabase(recordingURL, fileName string) error {
-	supabaseURL := os.Getenv("SUPABASE_URL")
-	supabaseKey := os.Getenv("SUPABASE_SERVICE_ROLE_KEY")
+	accessKeyID := os.Getenv("SUPABASE_ACCESS_KEY_ID")
+	secretKey := os.Getenv("SUPABASE_SECRET_KEY")
+	endpoint := os.Getenv("SUPABASE_S3_ENDPOINT")
+	region := os.Getenv("SUPABASE_REGION")
 	bucketName := "voice-recording"
 
-	if supabaseURL == "" || supabaseKey == "" {
-		return fmt.Errorf("missing Supabase configuration")
+	if accessKeyID == "" || secretKey == "" || endpoint == "" {
+		return fmt.Errorf("missing Supabase S3 configuration")
+	}
+
+	if region == "" {
+		region = "us-east-2"
 	}
 
 	cfg, err := config.LoadDefaultConfig(context.TODO(),
-		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("", supabaseKey, "")),
-		config.WithRegion("us-east-1"),
+		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKeyID, secretKey, "")),
+		config.WithRegion(region),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to load config: %v", err)
 	}
 
 	s3Client := s3.NewFromConfig(cfg, func(o *s3.Options) {
-		o.BaseEndpoint = aws.String(supabaseURL + "/storage/v1/s3")
+		o.BaseEndpoint = aws.String(endpoint)
 		o.UsePathStyle = true
 	})
 
