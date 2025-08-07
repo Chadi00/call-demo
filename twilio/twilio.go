@@ -64,13 +64,13 @@ func (s *Service) handleVoice(c echo.Context) error {
 
 	// Use TwiML Record verb for reliable recording
 	callbackURL := buildURL(c.Request(), "/twilio/recording-status")
+	actionURL := buildURL(c.Request(), "/twilio/recording-complete")
+
 	twiml := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say>Hello! Your call is being recorded. Please speak your message after the beep, then hang up or press any key when done.</Say>
-  <Record maxLength="120" action="%s" recordingStatusCallback="%s" recordingStatusCallbackMethod="POST" />
-  <Say>Thank you for your call. Goodbye!</Say>
-  <Hangup/>
-</Response>`, buildURL(c.Request(), "/twilio/recording-complete"), callbackURL)
+  <Say>Hello! Your call is being recorded. Please speak your message after the beep. Press any key when you're done speaking.</Say>
+  <Record maxLength="120" action="%s" recordingStatusCallback="%s" recordingStatusCallbackMethod="POST" finishOnKey="*#0123456789" />
+</Response>`, actionURL, callbackURL)
 
 	return c.XML(http.StatusOK, twiml)
 }
@@ -121,7 +121,14 @@ func (s *Service) handleRecordingComplete(c echo.Context) error {
 		}()
 	}
 
-	return c.String(http.StatusOK, "OK")
+	// Return TwiML to properly end the call
+	twiml := `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say>Thank you for your recording. Your message has been saved. Goodbye!</Say>
+  <Hangup/>
+</Response>`
+
+	return c.XML(http.StatusOK, twiml)
 }
 
 func (s *Service) authMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
