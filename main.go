@@ -177,11 +177,8 @@ func main() {
 
 		e.Logger.Infof("Call from %s to %s - starting full call recording", fromNumber, toNumber)
 
-		// Start recording the entire call immediately
+		// Start recording the entire call immediately - recording continues until call ends
 		record := &twiml.VoiceRecord{
-			Action:                        "/twilio/recording-complete",
-			Method:                        "POST",
-			Timeout:                       "0",           // No timeout - record until call ends or max length
 			MaxLength:                     "3600",        // 1 hour max recording
 			PlayBeep:                      "false",       // No beep - silent recording
 			Trim:                          "do-not-trim", // Keep full audio even if silent
@@ -190,11 +187,95 @@ func main() {
 			RecordingStatusCallbackEvent:  "completed failed",
 		}
 
-		// Welcome message after recording starts
-		welcomeMessage := fmt.Sprintf("Hello! You've reached a secure Twilio webhook. You are calling from %s. This call is being recorded.", fromNumber)
+		// Welcome message
+		welcomeMessage := fmt.Sprintf("Hello! You've reached a secure Twilio webhook. You are calling from %s. This call is being recorded. Press any key to hear a message.", fromNumber)
 		say := &twiml.VoiceSay{Message: welcomeMessage}
 
-		response, err := twiml.Voice([]twiml.Element{record, say})
+		// Gather for key input - this handles key presses without stopping the recording
+		gather := &twiml.VoiceGather{
+			Action:    "/twilio/key-pressed",
+			Method:    "POST",
+			Timeout:   "30", // Wait 30 seconds for input
+			NumDigits: "1",  // Only need one digit
+		}
+
+		// If no key is pressed, redirect to wait for more input
+		redirect := &twiml.VoiceRedirect{
+			Url:    "/twilio/wait-for-input",
+			Method: "POST",
+		}
+
+		response, err := twiml.Voice([]twiml.Element{record, say, gather, redirect})
+		if err != nil {
+			return c.String(http.StatusInternalServerError, "failed to build TwiML")
+		}
+		c.Response().Header().Set(echo.HeaderContentType, "application/xml")
+		return c.String(http.StatusOK, response)
+	})
+
+	// Handle key press during call - TTS activates but recording continues
+	e.POST("/twilio/key-pressed", func(c echo.Context) error {
+		params, ok := c.Get("twilioParams").(map[string]string)
+		if !ok {
+			return c.String(http.StatusInternalServerError, "Failed to get Twilio parameters")
+		}
+
+		digits := params["Digits"]
+		fromNumber := params["From"]
+
+		e.Logger.Infof("Key pressed by %s: %s - playing TTS message while recording continues", fromNumber, digits)
+
+		// Play TTS message when key is pressed
+		ttsMessage := "Thank you for pressing a key! Your call is still being recorded. You can hang up when you're done, or press another key to hear this message again."
+		say := &twiml.VoiceSay{Message: ttsMessage}
+
+		// Continue gathering for more key presses
+		gather := &twiml.VoiceGather{
+			Action:    "/twilio/key-pressed",
+			Method:    "POST",
+			Timeout:   "30", // Wait 30 seconds for next input
+			NumDigits: "1",  // Only need one digit
+		}
+
+		// If no more keys pressed, redirect to wait
+		redirect := &twiml.VoiceRedirect{
+			Url:    "/twilio/wait-for-input",
+			Method: "POST",
+		}
+
+		response, err := twiml.Voice([]twiml.Element{say, gather, redirect})
+		if err != nil {
+			return c.String(http.StatusInternalServerError, "failed to build TwiML")
+		}
+		c.Response().Header().Set(echo.HeaderContentType, "application/xml")
+		return c.String(http.StatusOK, response)
+	})
+
+	// Handle timeout when no key is pressed - continue waiting
+	e.POST("/twilio/wait-for-input", func(c echo.Context) error {
+		params, ok := c.Get("twilioParams").(map[string]string)
+		if !ok {
+			return c.String(http.StatusInternalServerError, "Failed to get Twilio parameters")
+		}
+
+		fromNumber := params["From"]
+		e.Logger.Infof("No key pressed by %s - continuing to wait for input while recording continues", fromNumber)
+
+		// Continue gathering for key presses
+		gather := &twiml.VoiceGather{
+			Action:    "/twilio/key-pressed",
+			Method:    "POST",
+			Timeout:   "30", // Wait 30 seconds for input
+			NumDigits: "1",  // Only need one digit
+		}
+
+		// Keep redirecting back here if no input
+		redirect := &twiml.VoiceRedirect{
+			Url:    "/twilio/wait-for-input",
+			Method: "POST",
+		}
+
+		response, err := twiml.Voice([]twiml.Element{gather, redirect})
 		if err != nil {
 			return c.String(http.StatusInternalServerError, "failed to build TwiML")
 		}
