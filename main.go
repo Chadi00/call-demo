@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha1"
@@ -88,9 +89,8 @@ func uploadRecordingToSupabase(recordingURL, fileName string) error {
 	_, err = s3Client.PutObject(context.TODO(), &s3.PutObjectInput{
 		Bucket:      aws.String(bucketName),
 		Key:         aws.String(fileName),
-		Body:        strings.NewReader(string(body)),
+		Body:        bytes.NewReader(body),
 		ContentType: aws.String("audio/wav"),
-		ACL:         "private",
 	})
 
 	if err != nil {
