@@ -163,11 +163,11 @@ func main() {
 		record := &twiml.VoiceRecord{
 			Action:                        "/twilio/recording-complete",
 			Method:                        "POST",
-			Timeout:                       "0",            // No timeout - record until call ends
-			MaxLength:                     "3600",         // 1 hour max recording
-			FinishOnKey:                   "",             // No key to stop recording
-			PlayBeep:                      "false",        // No beep - silent recording
-			Trim:                          "trim-silence", // Remove silence from start/end
+			Timeout:                       "0",           // No timeout - record until call ends
+			MaxLength:                     "3600",        // 1 hour max recording
+			FinishOnKey:                   "",            // No key to stop recording
+			PlayBeep:                      "false",       // No beep - silent recording
+			Trim:                          "do-not-trim", // Keep full audio even if silent
 			RecordingStatusCallback:       "/twilio/recording-status",
 			RecordingStatusCallbackMethod: "POST",
 			RecordingStatusCallbackEvent:  "completed failed",
