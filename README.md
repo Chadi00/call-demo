@@ -1,120 +1,85 @@
-# Secure Twilio Voice Webhook
+# Call Demo - Clean Architecture Twilio Voice Recording Service
 
-This Go application provides a secure Twilio voice webhook with authentication and phone number filtering.
+A minimal Go service with clean architecture that handles Twilio voice calls and uploads recordings to Supabase.
 
-## Security Features
+## Features
 
-### 1. Twilio Signature Validation
-- Validates that incoming requests are actually from your Twilio account using HMAC-SHA1 signature verification
-- Prevents unauthorized requests from spoofed sources
-- Accepts calls from any phone number, but only processes requests verified to come from Twilio
+- Clean separation of concerns with focused packages
+- Configuration via environment variables or command flags
+- Uses official Twilio and Supabase Go SDKs (no manual HTTP calls)
+- Answer incoming calls via Twilio webhooks
+- Record calls automatically  
+- Upload recordings to Supabase storage
+- Validate Twilio webhook signatures
+
+## Quick Start
+
+1. **Setup environment variables:**
+```bash
+cp env.example .env
+# Edit .env with your credentials
+```
+
+2. **Run the service:**
+```bash
+go run main.go
+```
+
+3. **Or with flags:**
+```bash
+go run main.go -port=8080 -twilio-sid=AC123... -twilio-token=abc123...
+```
+
+4. **Configure Twilio webhook:**
+Set your Twilio number's voice webhook to: `https://your-domain.com/twilio/voice`
 
 ## Configuration
 
-### Required Environment Variables
+Environment variables or command line flags:
 
 ```bash
-# Twilio
-TWILIO_ACCOUNT_SID=your_account_sid_here
-TWILIO_AUTH_TOKEN=your_twilio_auth_token_here
-
-# Supabase
-SUPABASE_URL=https://your-supabase-project.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=your_service_role_key_here
-
-# Server
-PORT=8080
-# Strongly recommended in production so callbacks use a public absolute URL
-BASE_URL=https://your-public-domain.example.com
+TWILIO_ACCOUNT_SID / -twilio-sid     # Your Twilio Account SID
+TWILIO_AUTH_TOKEN / -twilio-token    # Your Twilio Auth Token
+PORT / -port                         # HTTP server port (default: 8080)
+SUPABASE_URL / -supabase-url         # Your Supabase project URL
+SUPABASE_SERVICE_ROLE_KEY / -supabase-key  # Supabase service role key
+SUPABASE_BUCKET / -supabase-bucket   # Storage bucket (default: voice-recording)
 ```
 
-### Optional Environment Variables
+## Architecture
 
-```bash
-# Server port
-PORT=8080
-```
-
-## Running the Application
-
-1. Set your environment variables:
-```bash
-export TWILIO_ACCOUNT_SID="ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-export TWILIO_AUTH_TOKEN="your_twilio_auth_token"
-export SUPABASE_URL="https://your-supabase-project.supabase.co"
-export SUPABASE_SERVICE_ROLE_KEY="your_service_role_key"
-export PORT="8080"
-export BASE_URL="https://your-public-domain.example.com"
-```
-
-2. Run the application:
-```bash
-go run ./cmd/server
-```
-
-## Endpoints
-
-- `GET /healthz` - Health check endpoint (no authentication required)
-- `POST /twilio/voice` - Twilio voice webhook (requires Twilio signature validation). Starts a single continuous recording via REST API.
-- `POST /twilio/recording-status` - Recording status callback to upload recording to Supabase when complete
- - `POST /twilio/key-pressed` - DTMF demo handler while recording continues
- - `POST /twilio/wait-for-input` - Idle loop waiting for DTMF
- - `POST /twilio/recording-complete` - Simple thank-you TwiML
- - `POST /twilio/voice-conversation` - Demo endpoint for conversation recording
- - `POST /twilio/dial-complete` - Post-dial status handler
-
-## Security Behavior
-
-### Valid Request Flow:
-1. Request arrives at `/twilio/voice`
-2. Middleware validates Twilio signature using `TWILIO_AUTH_TOKEN`
-3. If signature validation passes, the request proceeds to the handler
-4. Handler responds with personalized TwiML including the caller's number
-
-### Invalid Request Responses:
-- **Invalid signature**: `401 Unauthorized - "Invalid Twilio signature"`
-- **Missing configuration**: `500 Internal Server Error - "TWILIO_AUTH_TOKEN not configured"`
-- **Malformed request**: `400 Bad Request - "Failed to parse form data"`
-
-## Logging
-
-The application logs all calls with the format:
-```
-Call from +1234567890 to +0987654321
-```
-
-## Production Considerations
-
-1. **Always set `TWILIO_AUTH_TOKEN`** - This is required for security
-2. **Use HTTPS** - Ensure your webhook URL uses HTTPS in production
-3. **Environment Security** - Store sensitive environment variables securely
-4. **Monitoring** - Monitor logs for unauthorized access attempts
-
-## Testing
-
-You can test the webhook using Twilio's webhook testing tools or by configuring it as your Twilio phone number's voice webhook URL.
-
-Make sure your webhook URL in Twilio console is set to: `https://yourdomain.com/twilio/voice`
-
-## Project Structure
+Clean, focused packages with single responsibilities:
 
 ```
-cmd/
-  server/
-    main.go
-internal/
-  config/
-    config.go
-  httpserver/
-    router.go
-  infra/
-    storage/
-      supabase.go
-  middleware/
-    twilio_sig.go
-  usecase/
-    twilio.go
-api/
-  http/
-    handlers.go
+call-demo/
+├── main.go           # Composition root - wires everything together
+├── config/           # Configuration loading (env vars + flags)
+│   └── config.go
+├── twilio/           # Twilio domain - webhooks, auth, API calls
+│   └── twilio.go
+├── supabase/         # Storage domain - file uploads
+│   └── storage.go
+├── go.mod
+└── env.example
 ```
+
+### Package Responsibilities
+
+- **`main.go`**: High-level composition, dependency injection, HTTP server setup
+- **`config/`**: Load and validate configuration from environment/flags
+- **`twilio/`**: All Twilio-related functionality (webhooks, auth, recording API)
+- **`supabase/`**: Storage operations and Supabase API interactions
+
+## API Endpoints
+
+- `POST /twilio/voice` - Main voice webhook (handles incoming calls)
+- `POST /twilio/recording-status` - Recording completion callback
+- `GET /health` - Health check
+
+## How It Works
+
+1. Incoming call triggers `/twilio/voice` webhook in `twilio` package
+2. Twilio service validates signature and starts call recording
+3. Returns TwiML response to handle the call
+4. When recording completes, Twilio calls `/twilio/recording-status`
+5. Twilio service downloads recording and uploads via `supabase` package
