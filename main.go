@@ -215,7 +215,7 @@ func main() {
 		recordingDuration := params["RecordingDuration"]
 		digits := params["Digits"]
 
-		e.Logger.Infof("Full call recording completed from %s, URL: %s, Duration: %s seconds", fromNumber, recordingURL, recordingDuration)
+		e.Logger.Infof("Full call recording completed from %s, URL: %s, Duration: %s seconds, SID: %s", fromNumber, recordingURL, recordingDuration, recordingSid)
 
 		// Log how the recording ended
 		if digits == "hangup" {
@@ -226,24 +226,7 @@ func main() {
 			e.Logger.Infof("Call recording ended due to timeout or max length")
 		}
 
-		// Upload recording asynchronously (will be more reliable when recording-status callback fires)
-		timestamp := time.Now().Unix()
-		fileName := fmt.Sprintf("recording_%s_%d.wav", recordingSid, timestamp)
-
-		go func() {
-			err := uploadRecordingToSupabase(recordingURL, fileName)
-			if err != nil {
-				e.Logger.Errorf("Failed to upload recording: %v", err)
-			} else {
-				fmt.Printf("\n📁 FULL CALL RECORDING UPLOADED 📁\n")
-				fmt.Printf("File: %s\n", fileName)
-				fmt.Printf("From: %s\n", fromNumber)
-				fmt.Printf("Recording SID: %s\n", recordingSid)
-				fmt.Printf("Duration: %s seconds\n", recordingDuration)
-				fmt.Printf("============================\n\n")
-				e.Logger.Infof("Recording uploaded successfully: %s", fileName)
-			}
-		}()
+		// Note: actual media may not be ready yet; we'll upload from the RecordingStatusCallback handler.
 
 		// Thank the caller and end the call
 		thankYouMessage := "Thank you for your call. The recording has been saved. Goodbye!"
