@@ -51,12 +51,31 @@ func uploadRecordingToSupabase(recordingURL, fileName string) error {
 		return fmt.Errorf("missing Supabase configuration: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY required")
 	}
 
-	// Download the recording from Twilio
-	resp, err := http.Get(recordingURL + ".wav")
+	// Download the recording from Twilio using Basic Auth
+	accountSID := os.Getenv("TWILIO_ACCOUNT_SID")
+	authToken := os.Getenv("TWILIO_AUTH_TOKEN")
+	if accountSID == "" || authToken == "" {
+		return fmt.Errorf("missing Twilio credentials: TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN required to download recording")
+	}
+
+	mediaURL := recordingURL + ".wav"
+	req, err := http.NewRequest("GET", mediaURL, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request to Twilio recording URL: %v", err)
+	}
+	req.SetBasicAuth(accountSID, authToken)
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to download recording: %v", err)
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		bodyPreview, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("failed to download recording, status %d: %s", resp.StatusCode, string(bodyPreview))
+	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -66,20 +85,19 @@ func uploadRecordingToSupabase(recordingURL, fileName string) error {
 	// Upload using Supabase Storage API
 	uploadURL := fmt.Sprintf("%s/storage/v1/object/%s/%s", supabaseURL, bucketName, fileName)
 
-	req, err := http.NewRequest("POST", uploadURL, bytes.NewReader(body))
+	uploadReq, err := http.NewRequest("POST", uploadURL, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("failed to create upload request: %v", err)
 	}
 
-	req.Header.Set("Authorization", "Bearer "+supabaseKey)
-	req.Header.Set("Content-Type", "audio/wav")
-	req.Header.Set("Cache-Control", "3600")
-	req.Header.Set("x-upsert", "true")
+	uploadReq.Header.Set("Authorization", "Bearer "+supabaseKey)
+	uploadReq.Header.Set("Content-Type", "audio/wav")
+	uploadReq.Header.Set("Cache-Control", "3600")
+	uploadReq.Header.Set("x-upsert", "true")
 
 	fmt.Printf("Uploading to bucket: %s, key: %s, URL: %s\n", bucketName, fileName, uploadURL)
 
-	client := &http.Client{}
-	uploadResp, err := client.Do(req)
+	uploadResp, err := client.Do(uploadReq)
 	if err != nil {
 		return fmt.Errorf("failed to upload to Supabase: %v", err)
 	}
