@@ -177,40 +177,20 @@ func main() {
 
 		e.Logger.Infof("Call from %s to %s - starting full call recording", fromNumber, toNumber)
 
-		// Start recording the entire call immediately - recording continues until call ends
-		record := &twiml.VoiceRecord{
-			MaxLength:                     "3600",        // 1 hour max recording
-			PlayBeep:                      "false",       // No beep - silent recording
-			Trim:                          "do-not-trim", // Keep full audio even if silent
-			RecordingStatusCallback:       "/twilio/recording-status",
-			RecordingStatusCallbackMethod: "POST",
-			RecordingStatusCallbackEvent:  "completed failed",
-		}
-
-		// Welcome message
+		// Build TwiML manually to start a single call-level recording once, then handle key presses via Gather
 		welcomeMessage := fmt.Sprintf("Hello! You've reached a secure Twilio webhook. You are calling from %s. This call is being recorded. Press any key to hear a message.", fromNumber)
-		say := &twiml.VoiceSay{Message: welcomeMessage}
+		twimlResponse := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+		<Response>
+		  <Start>
+		    <Record recordingStatusCallback="%s" recordingStatusCallbackMethod="POST" recordingStatusCallbackEvent="completed failed" playBeep="false" trim="do-not-trim"/>
+		  </Start>
+		  <Say>%s</Say>
+		  <Gather action="/twilio/key-pressed" method="POST" timeout="30" numDigits="1" />
+		  <Redirect method="POST">/twilio/wait-for-input</Redirect>
+		</Response>`, "/twilio/recording-status", welcomeMessage)
 
-		// Gather for key input - this handles key presses without stopping the recording
-		gather := &twiml.VoiceGather{
-			Action:    "/twilio/key-pressed",
-			Method:    "POST",
-			Timeout:   "30", // Wait 30 seconds for input
-			NumDigits: "1",  // Only need one digit
-		}
-
-		// If no key is pressed, redirect to wait for more input
-		redirect := &twiml.VoiceRedirect{
-			Url:    "/twilio/wait-for-input",
-			Method: "POST",
-		}
-
-		response, err := twiml.Voice([]twiml.Element{record, say, gather, redirect})
-		if err != nil {
-			return c.String(http.StatusInternalServerError, "failed to build TwiML")
-		}
 		c.Response().Header().Set(echo.HeaderContentType, "application/xml")
-		return c.String(http.StatusOK, response)
+		return c.String(http.StatusOK, twimlResponse)
 	})
 
 	// Handle key press during call - TTS activates but recording continues
