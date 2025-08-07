@@ -5,13 +5,9 @@ This Go application provides a secure Twilio voice webhook with authentication a
 ## Security Features
 
 ### 1. Twilio Signature Validation
-- Validates that incoming requests are actually from Twilio using HMAC-SHA1 signature verification
+- Validates that incoming requests are actually from your Twilio account using HMAC-SHA1 signature verification
 - Prevents unauthorized requests from spoofed sources
-
-### 2. Phone Number Allowlist
-- Restricts webhook access to specific phone numbers only
-- Configurable via environment variables
-- Supports various phone number formats (with/without country codes, formatting)
+- Accepts calls from any phone number, but only processes requests verified to come from Twilio
 
 ## Configuration
 
@@ -25,30 +21,15 @@ TWILIO_AUTH_TOKEN=your_twilio_auth_token_here
 ### Optional Environment Variables
 
 ```bash
-# Allowed phone numbers (comma-separated)
-# Leave empty to allow all numbers (not recommended for production)
-ALLOWED_NUMBERS=+1234567890,+0987654321
-
 # Server port
 PORT=8080
 ```
-
-## Phone Number Format
-
-The allowlist supports multiple phone number formats:
-- `+1234567890` (with country code)
-- `1234567890` (without country code)
-- `(123) 456-7890` (with formatting)
-- `123-456-7890` (with dashes)
-
-All formats are automatically normalized for comparison.
 
 ## Running the Application
 
 1. Set your environment variables:
 ```bash
 export TWILIO_AUTH_TOKEN="your_twilio_auth_token"
-export ALLOWED_NUMBERS="+1234567890,+0987654321"
 export PORT="8080"
 ```
 
@@ -60,37 +41,34 @@ go run main.go
 ## Endpoints
 
 - `GET /healthz` - Health check endpoint (no authentication required)
-- `POST /twilio/voice` - Twilio voice webhook (requires Twilio authentication and allowed phone number)
+- `POST /twilio/voice` - Twilio voice webhook (requires Twilio signature validation)
 
 ## Security Behavior
 
 ### Valid Request Flow:
 1. Request arrives at `/twilio/voice`
 2. Middleware validates Twilio signature using `TWILIO_AUTH_TOKEN`
-3. Middleware checks if the calling number (`From` parameter) is in the allowlist
-4. If both checks pass, the request proceeds to the handler
-5. Handler responds with personalized TwiML
+3. If signature validation passes, the request proceeds to the handler
+4. Handler responds with personalized TwiML including the caller's number
 
 ### Invalid Request Responses:
 - **Invalid signature**: `401 Unauthorized - "Invalid Twilio signature"`
-- **Unauthorized phone number**: `403 Forbidden - "Phone number not authorized"`
 - **Missing configuration**: `500 Internal Server Error - "TWILIO_AUTH_TOKEN not configured"`
 - **Malformed request**: `400 Bad Request - "Failed to parse form data"`
 
 ## Logging
 
-The application logs all authorized calls with the format:
+The application logs all calls with the format:
 ```
-Authorized call from +1234567890 to +0987654321
+Call from +1234567890 to +0987654321
 ```
 
 ## Production Considerations
 
 1. **Always set `TWILIO_AUTH_TOKEN`** - This is required for security
-2. **Configure `ALLOWED_NUMBERS`** - Don't leave this empty in production
-3. **Use HTTPS** - Ensure your webhook URL uses HTTPS in production
-4. **Environment Security** - Store sensitive environment variables securely
-5. **Monitoring** - Monitor logs for unauthorized access attempts
+2. **Use HTTPS** - Ensure your webhook URL uses HTTPS in production
+3. **Environment Security** - Store sensitive environment variables securely
+4. **Monitoring** - Monitor logs for unauthorized access attempts
 
 ## Testing
 

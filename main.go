@@ -17,41 +17,6 @@ import (
 	"github.com/twilio/twilio-go/twiml"
 )
 
-// getAllowedNumbers returns the list of allowed phone numbers from environment
-func getAllowedNumbers() map[string]bool {
-	allowedStr := os.Getenv("ALLOWED_NUMBERS")
-	fmt.Printf("DEBUG: ALLOWED_NUMBERS env var: '%s'\n", allowedStr)
-
-	if allowedStr == "" {
-		fmt.Printf("DEBUG: No ALLOWED_NUMBERS configured, allowing all\n")
-		return map[string]bool{}
-	}
-
-	allowed := make(map[string]bool)
-	numbers := strings.Split(allowedStr, ",")
-	fmt.Printf("DEBUG: Split numbers: %v\n", numbers)
-
-	for _, number := range numbers {
-		original := strings.TrimSpace(number)
-		// Normalize phone number (remove spaces, dashes, etc.)
-		normalized := strings.ReplaceAll(original, " ", "")
-		normalized = strings.ReplaceAll(normalized, "-", "")
-		normalized = strings.ReplaceAll(normalized, "(", "")
-		normalized = strings.ReplaceAll(normalized, ")", "")
-		normalized = strings.ReplaceAll(normalized, "+", "")
-
-		if normalized != "" {
-			// Add both original and normalized versions
-			allowed[original] = true
-			allowed[normalized] = true
-			fmt.Printf("DEBUG: Added to allowlist: original='%s', normalized='%s'\n", original, normalized)
-		}
-	}
-
-	fmt.Printf("DEBUG: Final allowlist: %v\n", allowed)
-	return allowed
-}
-
 // validateTwilioSignature validates that the request came from Twilio
 func validateTwilioSignature(authToken, signature, url string, params map[string]string) bool {
 	if authToken == "" || signature == "" {
@@ -77,7 +42,7 @@ func validateTwilioSignature(authToken, signature, url string, params map[string
 	return hmac.Equal([]byte(signature), []byte(expectedSignature))
 }
 
-// twilioAuthMiddleware validates Twilio requests and allowed phone numbers
+// twilioAuthMiddleware validates Twilio requests using signature verification
 func twilioAuthMiddleware() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
@@ -115,46 +80,8 @@ func twilioAuthMiddleware() echo.MiddlewareFunc {
 			signature := c.Request().Header.Get("X-Twilio-Signature")
 			requestURL := fmt.Sprintf("https://%s%s", c.Request().Host, c.Request().URL.Path)
 
-			fmt.Printf("DEBUG: Request URL for signature: '%s'\n", requestURL)
-			fmt.Printf("DEBUG: Twilio signature header: '%s'\n", signature)
-			fmt.Printf("DEBUG: Auth token (first 10 chars): '%s...'\n", authToken[:10])
-
 			if !validateTwilioSignature(authToken, signature, requestURL, params) {
-				fmt.Printf("DEBUG: Signature validation failed!\n")
 				return c.String(http.StatusUnauthorized, "Invalid Twilio signature")
-			}
-
-			fmt.Printf("DEBUG: Signature validation passed!\n")
-
-			// Check if phone number is allowed
-			fromNumber := params["From"]
-			if fromNumber == "" {
-				return c.String(http.StatusBadRequest, "Missing From parameter")
-			}
-
-			allowedNumbers := getAllowedNumbers()
-
-			// Debug logging
-			fmt.Printf("DEBUG: Incoming number from Twilio: '%s'\n", fromNumber)
-			fmt.Printf("DEBUG: Allowed numbers configured: %v\n", allowedNumbers)
-
-			if len(allowedNumbers) > 0 {
-				// Normalize the incoming number for comparison
-				normalizedFrom := strings.ReplaceAll(fromNumber, "+", "")
-				normalizedFrom = strings.ReplaceAll(normalizedFrom, " ", "")
-				normalizedFrom = strings.ReplaceAll(normalizedFrom, "-", "")
-				normalizedFrom = strings.ReplaceAll(normalizedFrom, "(", "")
-				normalizedFrom = strings.ReplaceAll(normalizedFrom, ")", "")
-
-				fmt.Printf("DEBUG: Normalized incoming number: '%s'\n", normalizedFrom)
-				fmt.Printf("DEBUG: Checking if '%s' or '%s' is in allowed list\n", normalizedFrom, fromNumber)
-
-				if !allowedNumbers[normalizedFrom] && !allowedNumbers[fromNumber] {
-					fmt.Printf("DEBUG: Phone number not authorized - returning 403\n")
-					return c.String(http.StatusForbidden, "Phone number not authorized")
-				}
-
-				fmt.Printf("DEBUG: Phone number authorized!\n")
 			}
 
 			// Store parsed form data in context for use in handlers
@@ -188,11 +115,11 @@ func main() {
 		fromNumber := params["From"]
 		toNumber := params["To"]
 
-		// Log the authorized call
-		e.Logger.Infof("Authorized call from %s to %s", fromNumber, toNumber)
+		// Log the call
+		e.Logger.Infof("Call from %s to %s", fromNumber, toNumber)
 
-		// Build TwiML response
-		message := fmt.Sprintf("Hello! This is a secure webhook. You are calling from %s.", fromNumber)
+		// Build TwiML response - welcome any caller
+		message := fmt.Sprintf("Hello! You've reached a secure Twilio webhook. You are calling from %s. Welcome!", fromNumber)
 		say := &twiml.VoiceSay{Message: message}
 		response, err := twiml.Voice([]twiml.Element{say})
 		if err != nil {
