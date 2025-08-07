@@ -2,10 +2,8 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"crypto/hmac"
 	"crypto/sha1"
-	"crypto/tls"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -16,10 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/twilio/twilio-go/twiml"
@@ -49,44 +43,15 @@ func validateTwilioSignature(authToken, signature, url string, params map[string
 }
 
 func uploadRecordingToSupabase(recordingURL, fileName string) error {
-	accessKeyID := os.Getenv("SUPABASE_ACCESS_KEY_ID")
-	secretKey := os.Getenv("SUPABASE_SECRET_KEY")
-	endpoint := os.Getenv("SUPABASE_S3_ENDPOINT")
-	region := os.Getenv("SUPABASE_REGION")
-	bucketName := "voice-recording"
+	supabaseURL := os.Getenv("SUPABASE_URL")
+	supabaseKey := os.Getenv("SUPABASE_SERVICE_ROLE_KEY")
+	bucketName := "voice-recordings"
 
-	if accessKeyID == "" || secretKey == "" || endpoint == "" {
-		return fmt.Errorf("missing Supabase S3 configuration")
+	if supabaseURL == "" || supabaseKey == "" {
+		return fmt.Errorf("missing Supabase configuration: SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY required")
 	}
 
-	if region == "" {
-		region = "auto"
-	}
-
-	customTransport := &http.Transport{
-		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: true,
-		},
-	}
-
-	httpClient := &http.Client{
-		Transport: customTransport,
-	}
-
-	cfg, err := config.LoadDefaultConfig(context.TODO(),
-		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKeyID, secretKey, "")),
-		config.WithRegion(region),
-		config.WithHTTPClient(httpClient),
-	)
-	if err != nil {
-		return fmt.Errorf("failed to load config: %v", err)
-	}
-
-	s3Client := s3.NewFromConfig(cfg, func(o *s3.Options) {
-		o.BaseEndpoint = aws.String(endpoint)
-		o.UsePathStyle = true
-	})
-
+	// Download the recording from Twilio
 	resp, err := http.Get(recordingURL + ".wav")
 	if err != nil {
 		return fmt.Errorf("failed to download recording: %v", err)
@@ -98,17 +63,31 @@ func uploadRecordingToSupabase(recordingURL, fileName string) error {
 		return fmt.Errorf("failed to read recording: %v", err)
 	}
 
-	fmt.Printf("Uploading to bucket: %s, key: %s, endpoint: %s\n", bucketName, fileName, endpoint)
+	// Upload using Supabase Storage API
+	uploadURL := fmt.Sprintf("%s/storage/v1/object/%s/%s", supabaseURL, bucketName, fileName)
 
-	_, err = s3Client.PutObject(context.TODO(), &s3.PutObjectInput{
-		Bucket:      aws.String(bucketName),
-		Key:         aws.String(fileName),
-		Body:        bytes.NewReader(body),
-		ContentType: aws.String("audio/wav"),
-	})
+	req, err := http.NewRequest("POST", uploadURL, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("failed to create upload request: %v", err)
+	}
 
+	req.Header.Set("Authorization", "Bearer "+supabaseKey)
+	req.Header.Set("Content-Type", "audio/wav")
+	req.Header.Set("Cache-Control", "3600")
+	req.Header.Set("x-upsert", "true")
+
+	fmt.Printf("Uploading to bucket: %s, key: %s, URL: %s\n", bucketName, fileName, uploadURL)
+
+	client := &http.Client{}
+	uploadResp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to upload to Supabase: %v", err)
+	}
+	defer uploadResp.Body.Close()
+
+	if uploadResp.StatusCode != http.StatusOK && uploadResp.StatusCode != http.StatusCreated {
+		respBody, _ := io.ReadAll(uploadResp.Body)
+		return fmt.Errorf("upload failed with status %d: %s", uploadResp.StatusCode, string(respBody))
 	}
 
 	return nil
