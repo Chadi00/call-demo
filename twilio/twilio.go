@@ -16,7 +16,6 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/twilio/twilio-go"
-	twilioApi "github.com/twilio/twilio-go/rest/api/v2010"
 )
 
 type Storage interface {
@@ -176,20 +175,6 @@ func (s *Service) validateSignature(signature, url string, params map[string]str
 	expected := base64.StdEncoding.EncodeToString(mac.Sum(nil))
 
 	return hmac.Equal([]byte(signature), []byte(expected))
-}
-
-func (s *Service) startRecording(callSID, callbackURL string) error {
-	params := &twilioApi.CreateCallRecordingParams{}
-	params.SetRecordingStatusCallback(callbackURL)
-	params.SetRecordingStatusCallbackMethod("POST")
-	params.SetRecordingStatusCallbackEvent([]string{"completed"})
-	params.SetRecordingChannels("mono")
-
-	_, err := s.client.Api.CreateCallRecording(callSID, params)
-	if err != nil {
-		return fmt.Errorf("failed to start recording: %w", err)
-	}
-	return nil
 }
 
 func (s *Service) uploadRecording(ctx context.Context, recordingURL, filename string) error {
