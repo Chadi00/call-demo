@@ -157,18 +157,27 @@ func main() {
 		fromNumber := params["From"]
 		toNumber := params["To"]
 
-		e.Logger.Infof("Call from %s to %s", fromNumber, toNumber)
+		e.Logger.Infof("Call from %s to %s - starting full call recording", fromNumber, toNumber)
 
+		// Start recording the entire call immediately
 		record := &twiml.VoiceRecord{
-			Action:      "/twilio/recording-complete",
-			Method:      "POST",
-			Timeout:     "5",
-			MaxLength:   "5",
-			FinishOnKey: "",
-			PlayBeep:    "false",
+			Action:                        "/twilio/recording-complete",
+			Method:                        "POST",
+			Timeout:                       "0",            // No timeout - record until call ends
+			MaxLength:                     "3600",         // 1 hour max recording
+			FinishOnKey:                   "",             // No key to stop recording
+			PlayBeep:                      "false",        // No beep - silent recording
+			Trim:                          "trim-silence", // Remove silence from start/end
+			RecordingStatusCallback:       "/twilio/recording-status",
+			RecordingStatusCallbackMethod: "POST",
+			RecordingStatusCallbackEvent:  "completed failed",
 		}
 
-		response, err := twiml.Voice([]twiml.Element{record})
+		// Welcome message after recording starts
+		welcomeMessage := fmt.Sprintf("Hello! You've reached a secure Twilio webhook. You are calling from %s. This call is being recorded.", fromNumber)
+		say := &twiml.VoiceSay{Message: welcomeMessage}
+
+		response, err := twiml.Voice([]twiml.Element{record, say})
 		if err != nil {
 			return c.String(http.StatusInternalServerError, "failed to build TwiML")
 		}
@@ -185,9 +194,21 @@ func main() {
 		fromNumber := params["From"]
 		recordingURL := params["RecordingUrl"]
 		recordingSid := params["RecordingSid"]
+		recordingDuration := params["RecordingDuration"]
+		digits := params["Digits"]
 
-		e.Logger.Infof("Recording completed from %s, URL: %s", fromNumber, recordingURL)
+		e.Logger.Infof("Full call recording completed from %s, URL: %s, Duration: %s seconds", fromNumber, recordingURL, recordingDuration)
 
+		// Log how the recording ended
+		if digits == "hangup" {
+			e.Logger.Infof("Call recording ended because caller hung up")
+		} else if digits != "" {
+			e.Logger.Infof("Call recording ended because caller pressed: %s", digits)
+		} else {
+			e.Logger.Infof("Call recording ended due to timeout or max length")
+		}
+
+		// Upload recording asynchronously (will be more reliable when recording-status callback fires)
 		timestamp := time.Now().Unix()
 		fileName := fmt.Sprintf("recording_%s_%d.wav", recordingSid, timestamp)
 
@@ -196,23 +217,139 @@ func main() {
 			if err != nil {
 				e.Logger.Errorf("Failed to upload recording: %v", err)
 			} else {
-				fmt.Printf("\n📁 RECORDING UPLOADED 📁\n")
+				fmt.Printf("\n📁 FULL CALL RECORDING UPLOADED 📁\n")
 				fmt.Printf("File: %s\n", fileName)
 				fmt.Printf("From: %s\n", fromNumber)
 				fmt.Printf("Recording SID: %s\n", recordingSid)
-				fmt.Printf("========================\n\n")
+				fmt.Printf("Duration: %s seconds\n", recordingDuration)
+				fmt.Printf("============================\n\n")
 				e.Logger.Infof("Recording uploaded successfully: %s", fileName)
 			}
 		}()
 
-		message := fmt.Sprintf("Hello! You've reached a secure Twilio webhook. You are calling from %s. Welcome!", fromNumber)
-		say := &twiml.VoiceSay{Message: message}
-		response, err := twiml.Voice([]twiml.Element{say})
+		// Thank the caller and end the call
+		thankYouMessage := "Thank you for your call. The recording has been saved. Goodbye!"
+		say := &twiml.VoiceSay{Message: thankYouMessage}
+		hangup := &twiml.VoiceHangup{}
+		response, err := twiml.Voice([]twiml.Element{say, hangup})
 		if err != nil {
 			return c.String(http.StatusInternalServerError, "failed to build TwiML")
 		}
 		c.Response().Header().Set(echo.HeaderContentType, "application/xml")
 		return c.String(http.StatusOK, response)
+	})
+
+	// Alternative endpoint for conversation recording (records both parties)
+	e.POST("/twilio/voice-conversation", func(c echo.Context) error {
+		params, ok := c.Get("twilioParams").(map[string]string)
+		if !ok {
+			return c.String(http.StatusInternalServerError, "Failed to get Twilio parameters")
+		}
+
+		fromNumber := params["From"]
+		toNumber := params["To"]
+
+		e.Logger.Infof("Conversation call from %s to %s", fromNumber, toNumber)
+
+		// Connect to another number with recording enabled
+		// Replace with actual destination number
+		destinationNumber := os.Getenv("DESTINATION_NUMBER")
+		if destinationNumber == "" {
+			destinationNumber = "+1234567890" // Fallback - replace with actual number
+		}
+
+		// For now, provide instructions on how to use conversation recording
+		conversationMessage := fmt.Sprintf("This endpoint demonstrates conversation recording. To use it, set DESTINATION_NUMBER environment variable to %s and implement Dial with record=true", destinationNumber)
+		conversationSay := &twiml.VoiceSay{Message: conversationMessage}
+		response, err := twiml.Voice([]twiml.Element{conversationSay})
+		if err != nil {
+			return c.String(http.StatusInternalServerError, "failed to build TwiML")
+		}
+		c.Response().Header().Set(echo.HeaderContentType, "application/xml")
+		return c.String(http.StatusOK, response)
+	})
+
+	// Handle what happens after dial completes
+	e.POST("/twilio/dial-complete", func(c echo.Context) error {
+		params, ok := c.Get("twilioParams").(map[string]string)
+		if !ok {
+			return c.String(http.StatusInternalServerError, "Failed to get Twilio parameters")
+		}
+
+		dialCallStatus := params["DialCallStatus"]
+
+		var message string
+		switch dialCallStatus {
+		case "completed":
+			message = "Thank you for your call. Goodbye!"
+		case "busy":
+			message = "The number you're trying to reach is busy. Please try again later."
+		case "no-answer":
+			message = "The number you're trying to reach is not answering. Please leave a message after the beep."
+			// Could add a Record verb here for voicemail
+		case "failed":
+			message = "We're sorry, but we couldn't connect your call. Please try again later."
+		default:
+			message = "Thank you for calling. Goodbye!"
+		}
+
+		say := &twiml.VoiceSay{Message: message}
+		hangup := &twiml.VoiceHangup{}
+		response, err := twiml.Voice([]twiml.Element{say, hangup})
+		if err != nil {
+			return c.String(http.StatusInternalServerError, "failed to build TwiML")
+		}
+		c.Response().Header().Set(echo.HeaderContentType, "application/xml")
+		return c.String(http.StatusOK, response)
+	})
+
+	// Recording status callback - called when recording processing is complete
+	e.POST("/twilio/recording-status", func(c echo.Context) error {
+		params, ok := c.Get("twilioParams").(map[string]string)
+		if !ok {
+			return c.String(http.StatusInternalServerError, "Failed to get Twilio parameters")
+		}
+
+		callSid := params["CallSid"]
+		recordingSid := params["RecordingSid"]
+		recordingURL := params["RecordingUrl"]
+		recordingStatus := params["RecordingStatus"]
+		recordingDuration := params["RecordingDuration"]
+		recordingChannels := params["RecordingChannels"]
+		recordingSource := params["RecordingSource"]
+
+		e.Logger.Infof("Recording status update: SID=%s, Status=%s, Duration=%s", recordingSid, recordingStatus, recordingDuration)
+
+		switch recordingStatus {
+		case "completed":
+			e.Logger.Infof("Recording is now available for download: %s", recordingURL)
+
+			// This is the most reliable time to upload the recording
+			timestamp := time.Now().Unix()
+			fileName := fmt.Sprintf("recording_%s_%d.wav", recordingSid, timestamp)
+
+			go func() {
+				err := uploadRecordingToSupabase(recordingURL, fileName)
+				if err != nil {
+					e.Logger.Errorf("Failed to upload recording from status callback: %v", err)
+				} else {
+					fmt.Printf("\n✅ RECORDING STATUS: UPLOADED ✅\n")
+					fmt.Printf("File: %s\n", fileName)
+					fmt.Printf("Call SID: %s\n", callSid)
+					fmt.Printf("Recording SID: %s\n", recordingSid)
+					fmt.Printf("Duration: %s seconds\n", recordingDuration)
+					fmt.Printf("Channels: %s\n", recordingChannels)
+					fmt.Printf("Source: %s\n", recordingSource)
+					fmt.Printf("=============================\n\n")
+					e.Logger.Infof("Recording uploaded successfully via status callback: %s", fileName)
+				}
+			}()
+		case "failed", "absent":
+			e.Logger.Errorf("Recording failed or is absent: SID=%s, Status=%s", recordingSid, recordingStatus)
+		}
+
+		// Return 200 OK to acknowledge receipt
+		return c.String(http.StatusOK, "OK")
 	})
 
 	port := os.Getenv("PORT")
