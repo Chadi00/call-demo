@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha1"
+	"crypto/tls"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -62,9 +63,20 @@ func uploadRecordingToSupabase(recordingURL, fileName string) error {
 		region = "auto"
 	}
 
+	customTransport := &http.Transport{
+		TLSClientConfig: &tls.Config{
+			InsecureSkipVerify: true,
+		},
+	}
+
+	httpClient := &http.Client{
+		Transport: customTransport,
+	}
+
 	cfg, err := config.LoadDefaultConfig(context.TODO(),
 		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKeyID, secretKey, "")),
 		config.WithRegion(region),
+		config.WithHTTPClient(httpClient),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to load config: %v", err)
@@ -72,7 +84,7 @@ func uploadRecordingToSupabase(recordingURL, fileName string) error {
 
 	s3Client := s3.NewFromConfig(cfg, func(o *s3.Options) {
 		o.BaseEndpoint = aws.String(endpoint)
-		o.UsePathStyle = false
+		o.UsePathStyle = true
 	})
 
 	resp, err := http.Get(recordingURL + ".wav")
@@ -85,6 +97,8 @@ func uploadRecordingToSupabase(recordingURL, fileName string) error {
 	if err != nil {
 		return fmt.Errorf("failed to read recording: %v", err)
 	}
+
+	fmt.Printf("Uploading to bucket: %s, key: %s, endpoint: %s\n", bucketName, fileName, endpoint)
 
 	_, err = s3Client.PutObject(context.TODO(), &s3.PutObjectInput{
 		Bucket:      aws.String(bucketName),
