@@ -59,7 +59,7 @@ func uploadRecordingToSupabase(recordingURL, fileName string) error {
 	}
 
 	if region == "" {
-		region = "us-east-2"
+		region = "auto"
 	}
 
 	cfg, err := config.LoadDefaultConfig(context.TODO(),
@@ -72,7 +72,7 @@ func uploadRecordingToSupabase(recordingURL, fileName string) error {
 
 	s3Client := s3.NewFromConfig(cfg, func(o *s3.Options) {
 		o.BaseEndpoint = aws.String(endpoint)
-		o.UsePathStyle = true
+		o.UsePathStyle = false
 	})
 
 	resp, err := http.Get(recordingURL + ".wav")
