@@ -20,22 +20,35 @@ import (
 // getAllowedNumbers returns the list of allowed phone numbers from environment
 func getAllowedNumbers() map[string]bool {
 	allowedStr := os.Getenv("ALLOWED_NUMBERS")
+	fmt.Printf("DEBUG: ALLOWED_NUMBERS env var: '%s'\n", allowedStr)
+
 	if allowedStr == "" {
+		fmt.Printf("DEBUG: No ALLOWED_NUMBERS configured, allowing all\n")
 		return map[string]bool{}
 	}
 
 	allowed := make(map[string]bool)
 	numbers := strings.Split(allowedStr, ",")
+	fmt.Printf("DEBUG: Split numbers: %v\n", numbers)
+
 	for _, number := range numbers {
+		original := strings.TrimSpace(number)
 		// Normalize phone number (remove spaces, dashes, etc.)
-		normalized := strings.ReplaceAll(strings.TrimSpace(number), " ", "")
+		normalized := strings.ReplaceAll(original, " ", "")
 		normalized = strings.ReplaceAll(normalized, "-", "")
 		normalized = strings.ReplaceAll(normalized, "(", "")
 		normalized = strings.ReplaceAll(normalized, ")", "")
+		normalized = strings.ReplaceAll(normalized, "+", "")
+
 		if normalized != "" {
+			// Add both original and normalized versions
+			allowed[original] = true
 			allowed[normalized] = true
+			fmt.Printf("DEBUG: Added to allowlist: original='%s', normalized='%s'\n", original, normalized)
 		}
 	}
+
+	fmt.Printf("DEBUG: Final allowlist: %v\n", allowed)
 	return allowed
 }
 
@@ -102,9 +115,16 @@ func twilioAuthMiddleware() echo.MiddlewareFunc {
 			signature := c.Request().Header.Get("X-Twilio-Signature")
 			requestURL := fmt.Sprintf("https://%s%s", c.Request().Host, c.Request().URL.Path)
 
+			fmt.Printf("DEBUG: Request URL for signature: '%s'\n", requestURL)
+			fmt.Printf("DEBUG: Twilio signature header: '%s'\n", signature)
+			fmt.Printf("DEBUG: Auth token (first 10 chars): '%s...'\n", authToken[:10])
+
 			if !validateTwilioSignature(authToken, signature, requestURL, params) {
+				fmt.Printf("DEBUG: Signature validation failed!\n")
 				return c.String(http.StatusUnauthorized, "Invalid Twilio signature")
 			}
+
+			fmt.Printf("DEBUG: Signature validation passed!\n")
 
 			// Check if phone number is allowed
 			fromNumber := params["From"]
@@ -113,6 +133,11 @@ func twilioAuthMiddleware() echo.MiddlewareFunc {
 			}
 
 			allowedNumbers := getAllowedNumbers()
+
+			// Debug logging
+			fmt.Printf("DEBUG: Incoming number from Twilio: '%s'\n", fromNumber)
+			fmt.Printf("DEBUG: Allowed numbers configured: %v\n", allowedNumbers)
+
 			if len(allowedNumbers) > 0 {
 				// Normalize the incoming number for comparison
 				normalizedFrom := strings.ReplaceAll(fromNumber, "+", "")
@@ -121,9 +146,15 @@ func twilioAuthMiddleware() echo.MiddlewareFunc {
 				normalizedFrom = strings.ReplaceAll(normalizedFrom, "(", "")
 				normalizedFrom = strings.ReplaceAll(normalizedFrom, ")", "")
 
+				fmt.Printf("DEBUG: Normalized incoming number: '%s'\n", normalizedFrom)
+				fmt.Printf("DEBUG: Checking if '%s' or '%s' is in allowed list\n", normalizedFrom, fromNumber)
+
 				if !allowedNumbers[normalizedFrom] && !allowedNumbers[fromNumber] {
+					fmt.Printf("DEBUG: Phone number not authorized - returning 403\n")
 					return c.String(http.StatusForbidden, "Phone number not authorized")
 				}
+
+				fmt.Printf("DEBUG: Phone number authorized!\n")
 			}
 
 			// Store parsed form data in context for use in handlers
