@@ -156,6 +156,12 @@ func main() {
 		transcriptionStatus := params["TranscriptionStatus"]
 		recordingSid := params["RecordingSid"]
 
+		fmt.Printf("\n🎤 LIVE TRANSCRIPTION 🎤\n")
+		fmt.Printf("Status: %s\n", transcriptionStatus)
+		fmt.Printf("Text: \"%s\"\n", transcriptionText)
+		fmt.Printf("Recording SID: %s\n", recordingSid)
+		fmt.Printf("========================\n\n")
+
 		e.Logger.Infof("Transcription received - SID: %s, Status: %s, Text: %s", recordingSid, transcriptionStatus, transcriptionText)
 
 		return c.String(http.StatusOK, "Transcription received")
