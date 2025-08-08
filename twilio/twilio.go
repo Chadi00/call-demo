@@ -1,5 +1,7 @@
 package twilio
 
+// Twilio service for handling voice calls using Echo and generating TwiML with the official twilio-go helper.
+
 import (
 	"context"
 	"crypto/hmac"
@@ -16,6 +18,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/twilio/twilio-go"
+	twiml "github.com/twilio/twilio-go/twiml"
 )
 
 type Storage interface {
@@ -62,17 +65,25 @@ func (s *Service) handleVoice(c echo.Context) error {
 
 	log.Printf("Call from %s, CallSID: %s", from, callSID)
 
-	// Use TwiML Record verb for reliable recording
+	// Build TwiML using SDK helper
 	callbackURL := buildURL(c.Request(), "/twilio/recording-status")
 	actionURL := buildURL(c.Request(), "/twilio/recording-complete")
 
-	twiml := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Say>Hello! Your call is being recorded. Please speak your message after the beep. Press any key when you're done speaking.</Say>
-  <Record maxLength="120" action="%s" recordingStatusCallback="%s" recordingStatusCallbackMethod="POST" finishOnKey="*#0123456789" />
-</Response>`, actionURL, callbackURL)
+	say := &twiml.VoiceSay{Message: "Hello! Your call is being recorded. Please speak your message after the beep. Press any key when you're done."}
+	record := &twiml.VoiceRecord{
+		MaxLength:                     "120",
+		Action:                        actionURL,
+		RecordingStatusCallback:       callbackURL,
+		RecordingStatusCallbackMethod: "POST",
+		FinishOnKey:                   "any",
+	}
 
-	return c.XML(http.StatusOK, twiml)
+	responseXML, err := twiml.Voice([]twiml.Element{say, record})
+	if err != nil {
+		return c.String(http.StatusInternalServerError, err.Error())
+	}
+	c.Response().Header().Set(echo.HeaderContentType, "application/xml")
+	return c.String(http.StatusOK, responseXML)
 }
 
 func (s *Service) handleRecordingStatus(c echo.Context) error {
@@ -128,7 +139,8 @@ func (s *Service) handleRecordingComplete(c echo.Context) error {
   <Hangup/>
 </Response>`
 
-	return c.XML(http.StatusOK, twiml)
+	c.Response().Header().Set(echo.HeaderContentType, "application/xml")
+	return c.String(http.StatusOK, twiml)
 }
 
 func (s *Service) authMiddleware(next echo.HandlerFunc) echo.HandlerFunc {
