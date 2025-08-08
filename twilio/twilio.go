@@ -1,7 +1,5 @@
 package twilio
 
-// Twilio service for handling voice calls using Echo and generating TwiML with the official twilio-go helper.
-
 import (
 	"context"
 	"crypto/hmac"
@@ -65,17 +63,15 @@ func (s *Service) handleVoice(c echo.Context) error {
 
 	log.Printf("Call from %s, CallSID: %s", from, callSID)
 
-	// Build TwiML using SDK helper
 	callbackURL := buildURL(c.Request(), "/twilio/recording-status")
 	actionURL := buildURL(c.Request(), "/twilio/recording-complete")
 
-	say := &twiml.VoiceSay{Message: "Hello! Your call is being recorded. Please speak your message after the beep. Press any key when you're done."}
+	say := &twiml.VoiceSay{Message: "Hello! This call is being recorded."}
 	record := &twiml.VoiceRecord{
-		MaxLength:                     "120",
+		MaxLength:                     "3600",
 		Action:                        actionURL,
 		RecordingStatusCallback:       callbackURL,
 		RecordingStatusCallbackMethod: "POST",
-		FinishOnKey:                   "any",
 	}
 
 	responseXML, err := twiml.Voice([]twiml.Element{say, record})
@@ -132,7 +128,6 @@ func (s *Service) handleRecordingComplete(c echo.Context) error {
 		}()
 	}
 
-	// Return TwiML to properly end the call
 	twiml := `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say>Thank you for your recording. Your message has been saved. Goodbye!</Say>
