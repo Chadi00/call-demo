@@ -72,6 +72,7 @@ func (s *Service) handleVoice(c echo.Context) error {
 		Action:                        actionURL,
 		RecordingStatusCallback:       callbackURL,
 		RecordingStatusCallbackMethod: "POST",
+		FinishOnKey:                   "", // Disable DTMF stop
 	}
 
 	responseXML, err := twiml.Voice([]twiml.Element{say, record})
@@ -128,11 +129,7 @@ func (s *Service) handleRecordingComplete(c echo.Context) error {
 		}()
 	}
 
-	twiml := `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Say>Thank you for your recording. Your message has been saved. Goodbye!</Say>
-  <Hangup/>
-</Response>`
+	twiml := `<?xml version="1.0" encoding="UTF-8"?>\n<Response/>`
 
 	c.Response().Header().Set(echo.HeaderContentType, "application/xml")
 	return c.String(http.StatusOK, twiml)
