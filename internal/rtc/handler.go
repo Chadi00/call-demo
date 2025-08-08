@@ -8,15 +8,17 @@ import (
 	"math"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/chadiek/call-demo/internal/agent"
 	"github.com/chadiek/call-demo/internal/llm"
 	"github.com/chadiek/call-demo/internal/transcript"
 	"github.com/chadiek/call-demo/internal/tts"
 	"github.com/hraban/opus"
 	"github.com/pion/interceptor"
 	"github.com/pion/webrtc/v3"
-	"github.com/pion/webrtc/v3/pkg/media"
+	// "github.com/pion/webrtc/v3/pkg/media"
 )
 
 // SessionDescription is a small DTO to avoid exposing webrtc types in transport.
@@ -77,8 +79,9 @@ func (h *Handler) HandleOffer(ctx context.Context, offer SessionDescription) (Se
 		return SessionDescription{}, err
 	}
 
+	// Build services
 	transcriptionService := transcript.NewAssemblyAIService(h.assemblyAIKey)
-	llmClient := llm.NewCerebrasClient(h.cerebrasAPIKey, ifEmpty(h.llmModel, "gpt-oss-120b"))
+	llmClient := llm.NewCerebrasClient(h.cerebrasAPIKey, ifEmpty(h.llmModel, "llama-4-maverick-17b-128e-instruct"))
 	ttsClient := tts.NewElevenLabsClient(h.elevenAPIKey, h.elevenVoiceID)
 
 	type convoTurn struct {
@@ -105,18 +108,26 @@ func (h *Handler) HandleOffer(ctx context.Context, offer SessionDescription) (Se
 		}
 	})
 
+	// Use a control channel instead of transcript streaming; client can send stop commands
+	var sessPtr atomic.Pointer[agent.Session]
+	var pacedPtr atomic.Pointer[OpusPacedWriter]
 	peerConnection.OnDataChannel(func(dc *webrtc.DataChannel) {
-		if dc.Label() != "transcripts" {
+		if dc.Label() != "control" {
 			return
 		}
-		log.Printf("[%s] Data channel opened", callID)
-		go func() {
-			for t := range transcriptionService.GetTranscripts() {
-				if t != "" {
-					_ = dc.SendText(t)
+		log.Printf("[%s] Control channel opened", callID)
+		dc.OnMessage(func(msg webrtc.DataChannelMessage) {
+			cmd := strings.TrimSpace(strings.ToLower(string(msg.Data)))
+			switch cmd {
+			case "stop", "stop-speaking", "cancel", "barge-in":
+				if s := sessPtr.Load(); s != nil {
+					(*s).BargeIn()
+				}
+				if p := pacedPtr.Load(); p != nil {
+					(*p).Reset()
 				}
 			}
-		}()
+		})
 	})
 	peerConnection.OnICEConnectionStateChange(func(state webrtc.ICEConnectionState) { log.Printf("[%s] ICE state: %s", callID, state.String()) })
 
@@ -126,12 +137,13 @@ func (h *Handler) HandleOffer(ctx context.Context, offer SessionDescription) (Se
 		}
 		log.Printf("[%s] Remote audio track received: codec=%s", callID, remote.Codec().MimeType)
 
-		// Prepare Opus encoder for outgoing agent audio immediately so we can beep
-		enc, err := opus.NewEncoder(48000, 1, opus.AppVoIP)
+		// Prepare paced writer for outgoing agent audio
+		paced, err := NewOpusPacedWriter(outTrack)
 		if err != nil {
 			log.Printf("[%s] Opus encoder error: %v", callID, err)
 			return
 		}
+		pacedPtr.Store(paced)
 
 		const (
 			pcm16kChunkBytes = 3200
@@ -139,26 +151,7 @@ func (h *Handler) HandleOffer(ctx context.Context, offer SessionDescription) (Se
 			pacerInterval    = 20 * time.Millisecond
 		)
 		pcm16kBuf := make([]byte, 0, pcm16kChunkBytes*4)
-		pcm48kBuf := make([]byte, 0, opusFrameSamples*2*10)
-		pcm48kInt16 := make([]int16, opusFrameSamples)
-		opusBuf := make([]byte, 4000)
-		// ~600ms buffer (30 frames * 20ms)
-		opusFrames := make(chan []byte, 30)
-
-		// Pacer
-		go func() {
-			ticker := time.NewTicker(pacerInterval)
-			defer ticker.Stop()
-			for range ticker.C {
-				select {
-				case frame := <-opusFrames:
-					if err := outTrack.WriteSample(media.Sample{Data: frame, Duration: pacerInterval}); err != nil {
-						log.Printf("[%s] WriteSample error: %v", callID, err)
-					}
-				default:
-				}
-			}
-		}()
+		// removed previous 48k buffer path; pacing via writer
 
 		// Send a short beep once to verify audio path
 		go func() {
@@ -167,7 +160,7 @@ func (h *Handler) HandleOffer(ctx context.Context, offer SessionDescription) (Se
 			phase := 0.0
 			phaseInc := 2 * math.Pi * 440.0 / 48000.0
 			beepFrame := make([]int16, opusFrameSamples)
-			opusBufBeep := make([]byte, 4000)
+			// opusBufBeep removed; using paced writer
 			for generated := 0; generated < samplesTotal; generated += opusFrameSamples {
 				for i := 0; i < opusFrameSamples; i++ {
 					if generated+i >= samplesTotal {
@@ -183,138 +176,43 @@ func (h *Handler) HandleOffer(ctx context.Context, offer SessionDescription) (Se
 					beepFrame[i] = int16(v)
 					phase += phaseInc
 				}
-				n, e := enc.Encode(beepFrame, opusBufBeep)
-				if e == nil && n > 0 {
-					pkt := make([]byte, n)
-					copy(pkt, opusBufBeep[:n])
-					select {
-					case opusFrames <- pkt:
-					default:
-					}
+				// write directly through paced writer
+				// encode using separate encoder to avoid disturbing main writer; small optimization skipped
+				// we reuse paced.WritePCM by providing 48k PCM bytes
+				tmp := make([]byte, opusFrameSamples*2)
+				for i := 0; i < opusFrameSamples; i++ {
+					v := uint16(beepFrame[i])
+					tmp[2*i] = byte(v)
+					tmp[2*i+1] = byte(v >> 8)
 				}
+				paced.WritePCM(tmp)
 			}
 		}()
 
-		// LLM/TTS flow (started only if transcription connects)
-		startLLMTTS := func() {
-			for utt := range transcriptionService.Finalize() {
-				if utt == "" {
-					continue
-				}
-				log.Printf("[%s] USER: %s", callID, utt)
+		// Build orchestrator
+		sess := agent.NewSession(
+			transcriptionService,
+			llmClient,
+			ttsClient,
+			paced,
+			nil, // live partials not used in this demo
+			func(user, assistantSpoken string) {
+				// Append only what was actually spoken by TTS; if interrupted the text includes marker
 				transcriptMu.Lock()
-				turns = append(turns, convoTurn{Role: "user", Text: utt, At: time.Now()})
+				turns = append(turns, convoTurn{Role: "USER", Text: user, At: time.Now()})
+				if assistantSpoken != "" {
+					turns = append(turns, convoTurn{Role: "ASSISTANT", Text: assistantSpoken, At: time.Now()})
+				}
 				transcriptMu.Unlock()
-
-				ctxLLM, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-				resp, err := llmClient.Generate(ctxLLM, utt)
-				cancel()
-				if err != nil {
-					log.Printf("[%s] LLM error: %v", callID, err)
-					continue
+				// Also log the spoken text for operator visibility
+				if assistantSpoken != "" {
+					log.Printf("[%s] SPOKEN assistant: %s", callID, assistantSpoken)
+				} else {
+					log.Printf("[%s] SPOKEN assistant: (none)", callID)
 				}
-				log.Printf("[%s] ASSISTANT: %s", callID, resp)
-				transcriptMu.Lock()
-				turns = append(turns, convoTurn{Role: "assistant", Text: resp, At: time.Now()})
-				transcriptMu.Unlock()
-
-				if h.elevenAPIKey == "" || h.elevenVoiceID == "" {
-					log.Printf("[%s] TTS disabled: ELEVENLABS_API_KEY or ELEVENLABS_VOICE_ID not set", callID)
-					continue
-				}
-				log.Printf("[%s] Starting ElevenLabs TTS voice=%s", callID, h.elevenVoiceID)
-				pcmStream, errStream := ttsClient.StreamPCM(context.Background(), resp)
-				// Drain until BOTH streams are closed; do not stop early when errStream closes without error
-				pcmOpen, errOpen := true, true
-				for pcmOpen || errOpen {
-					select {
-					case b0, ok := <-pcmStream:
-						if !ok {
-							pcmOpen = false
-							continue
-						}
-						if len(b0) > 0 {
-							pcm48kBuf = append(pcm48kBuf, b0...)
-							for len(pcm48kBuf) >= opusFrameSamples*2 {
-								for i := 0; i < opusFrameSamples; i++ {
-									pcm48kInt16[i] = int16(binary.LittleEndian.Uint16(pcm48kBuf[i*2 : (i+1)*2]))
-								}
-								copy(pcm48kBuf, pcm48kBuf[opusFrameSamples*2:])
-								pcm48kBuf = pcm48kBuf[:len(pcm48kBuf)-opusFrameSamples*2]
-								n, e := enc.Encode(pcm48kInt16, opusBuf)
-								if e == nil {
-									frame := make([]byte, n)
-									copy(frame, opusBuf[:n])
-									opusFrames <- frame
-								}
-							}
-						}
-					case e, ok := <-errStream:
-						if ok && e != nil {
-							log.Printf("[%s] TTS stream error: %v", callID, e)
-						}
-						// mark error stream handled; do NOT break early when it closes without error
-						errOpen = false
-					}
-				}
-				if rem := len(pcm48kBuf); rem > 0 {
-					if rem >= opusFrameSamples*2 {
-						for len(pcm48kBuf) >= opusFrameSamples*2 {
-							for i := 0; i < opusFrameSamples; i++ {
-								pcm48kInt16[i] = int16(binary.LittleEndian.Uint16(pcm48kBuf[i*2 : (i+1)*2]))
-							}
-							copy(pcm48kBuf, pcm48kBuf[opusFrameSamples*2:])
-							pcm48kBuf = pcm48kBuf[:len(pcm48kBuf)-opusFrameSamples*2]
-							n, e := enc.Encode(pcm48kInt16, opusBuf)
-							if e == nil {
-								frame := make([]byte, n)
-								copy(frame, opusBuf[:n])
-								opusFrames <- frame
-							}
-						}
-					}
-					if len(pcm48kBuf) > 0 && len(pcm48kBuf) < opusFrameSamples*2 {
-						for i := 0; i < opusFrameSamples; i++ {
-							pcm48kInt16[i] = 0
-						}
-						for i := 0; i < len(pcm48kBuf)/2; i++ {
-							pcm48kInt16[i] = int16(binary.LittleEndian.Uint16(pcm48kBuf[i*2 : (i+1)*2]))
-						}
-						n, e := enc.Encode(pcm48kInt16, opusBuf)
-						if e == nil {
-							frame := make([]byte, n)
-							copy(frame, opusBuf[:n])
-							opusFrames <- frame
-						}
-					}
-					pcm48kBuf = pcm48kBuf[:0]
-
-					// add a short silence tail to avoid clipping the end (~200ms)
-					for i := 0; i < 10; i++ { // 10 frames * 20ms
-						for j := 0; j < opusFrameSamples; j++ {
-							pcm48kInt16[j] = 0
-						}
-						n, e := enc.Encode(pcm48kInt16, opusBuf)
-						if e == nil && n > 0 {
-							frame := make([]byte, n)
-							copy(frame, opusBuf[:n])
-							opusFrames <- frame
-						}
-					}
-
-					// drain remaining frames based on backlog size (targets ~600ms)
-					if backlog := len(opusFrames); backlog > 0 {
-						deadline := time.Now().Add(time.Duration(backlog)*pacerInterval + 200*time.Millisecond)
-						for time.Now().Before(deadline) {
-							if len(opusFrames) == 0 {
-								break
-							}
-							time.Sleep(10 * time.Millisecond)
-						}
-					}
-				}
-			}
-		}
+			},
+		)
+		sessPtr.Store(sess)
 
 		// Mic reader (started only if transcription connects)
 		startMicReader := func(dec *opus.Decoder) {
@@ -349,7 +247,7 @@ func (h *Handler) HandleOffer(ctx context.Context, offer SessionDescription) (Se
 					}
 					for len(pcm16kBuf) >= pcm16kChunkBytes {
 						chunk := pcm16kBuf[:pcm16kChunkBytes]
-						if err := transcriptionService.SendAudio(chunk); err != nil {
+						if err := transcriptionService.SendPCM16KLE(chunk); err != nil {
 							log.Printf("[%s] AAI send error: %v", callID, err)
 						}
 						copy(pcm16kBuf, pcm16kBuf[pcm16kChunkBytes:])
@@ -359,7 +257,40 @@ func (h *Handler) HandleOffer(ctx context.Context, offer SessionDescription) (Se
 			}()
 		}
 
-		// Try to connect to AssemblyAI; if successful, start mic reader and LLM/TTS flow
+		// Barge-in detection based on recent voice activity (VAD), not partial text.
+		var speaking int32 // 0 false, 1 true
+		doneCh := make(chan struct{})
+		peerConnection.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
+			if state == webrtc.PeerConnectionStateClosed || state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateDisconnected {
+				select {
+				case <-doneCh:
+				default:
+					close(doneCh)
+				}
+			}
+		})
+		go func() {
+			ticker := time.NewTicker(40 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					if atomic.LoadInt32(&speaking) == 1 && sess.IsSpeaking() {
+						// If we detected voice within the last 150ms, treat as barge-in
+						if transcriptionService.RecentlyDetectedVoice(150 * time.Millisecond) {
+							log.Printf("[%s] barge-in: canceling TTS (VAD)", callID)
+							sess.BargeIn()
+							paced.Reset()
+							atomic.StoreInt32(&speaking, 0)
+						}
+					}
+				case <-doneCh:
+					return
+				}
+			}
+		}()
+
+		// Try to connect and start orchestrator
 		if err := transcriptionService.Connect(); err != nil {
 			log.Printf("[%s] Failed to connect to AssemblyAI (assistant replies disabled): %v", callID, err)
 		} else {
@@ -370,7 +301,40 @@ func (h *Handler) HandleOffer(ctx context.Context, offer SessionDescription) (Se
 				return
 			}
 			startMicReader(dec)
-			go startLLMTTS()
+			ctxSess, cancelSess := context.WithCancel(context.Background())
+			stop, err := sess.Start(ctxSess)
+			if err != nil {
+				log.Printf("[%s] session start error: %v", callID, err)
+			}
+			// Track speaking state transitions via FlushTail timing is not explicit; rely on sess.IsSpeaking
+			go func() {
+				// lightweight ticker to sample speaking state and expose to atomic flag
+				t := time.NewTicker(20 * time.Millisecond)
+				defer t.Stop()
+				for {
+					select {
+					case <-ctxSess.Done():
+						return
+					case <-t.C:
+						if sess.IsSpeaking() {
+							atomic.StoreInt32(&speaking, 1)
+						} else {
+							atomic.StoreInt32(&speaking, 0)
+						}
+					}
+				}
+			}()
+			// ensure cleanup on close; allow frames to drain before closing
+			peerConnection.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
+				if state == webrtc.PeerConnectionStateClosed || state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateDisconnected {
+					cancelSess()
+					if stop != nil {
+						stop()
+					}
+					paced.FlushTail()
+					time.AfterFunc(400*time.Millisecond, func() { paced.Close() })
+				}
+			})
 		}
 	})
 

@@ -45,6 +45,11 @@ func (e *ElevenLabsClient) StreamPCM(ctx context.Context, text string) (<-chan [
 	return pcmCh, errCh
 }
 
+// StreamPCM48k adapts to the agent.TTS interface.
+func (e *ElevenLabsClient) StreamPCM48k(ctx context.Context, text string) (<-chan []byte, <-chan error) {
+	return e.StreamPCM(ctx, text)
+}
+
 // wsStream tries the ElevenLabs WebSocket stream-input and returns nil when audio was produced or context closed.
 // If it returns a non-nil error, caller may fallback to HTTP.
 // wsStream removed while WS impl is under review; HTTP streaming is used instead

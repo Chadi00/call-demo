@@ -14,6 +14,9 @@ import (
 )
 
 func main() {
+	// Include sub-second precision in all log timestamps
+	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
+
 	cfg := config.Load()
 
 	srv := httpserver.New(cfg)

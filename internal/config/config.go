@@ -37,7 +37,7 @@ func Load() Config {
 	cerebrasKey := os.Getenv("CEREBRAS_API_KEY")
 	cerebrasModel := os.Getenv("CEREBRAS_MODEL_ID")
 	if cerebrasModel == "" {
-		cerebrasModel = "gpt-oss-120b"
+		cerebrasModel = "llama-4-maverick-17b-128e-instruct"
 	}
 	if cerebrasKey == "" {
 		log.Println("Warning: CEREBRAS_API_KEY not set - LLM will not work")
