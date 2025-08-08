@@ -1,85 +1,50 @@
-# Call Demo - Clean Architecture Twilio Voice Recording Service
+# call-demo
 
-A minimal Go service with clean architecture that handles Twilio voice calls and uploads recordings to Supabase.
+A WebRTC transcription server using Pion and AssemblyAI with an HTTP `/call` route. The client posts an SDP offer (JSON), receives an SDP answer, and gets live transcripts via WebRTC data channels.
 
-## Features
+## Setup
 
-- Clean separation of concerns with focused packages
-- Configuration via environment variables or command flags
-- Uses official Twilio and Supabase Go SDKs (no manual HTTP calls)
-- Answer incoming calls via Twilio webhooks
-- Record calls automatically  
-- Upload recordings to Supabase storage
-- Validate Twilio webhook signatures
+1. **Get AssemblyAI API Key:**
+   - Sign up at [AssemblyAI](https://www.assemblyai.com/)
+   - Get your API key from the dashboard
 
-## Quick Start
+2. **Set Environment Variables:**
+   ```bash
+   export ASSEMBLYAI_API_KEY="your_api_key_here"
+   export HTTP_ADDRESS=":8080"  # optional, defaults to :8080
+   ```
 
-1. **Setup environment variables:**
-```bash
-cp env.example .env
-# Edit .env with your credentials
-```
+3. **Run the Server:**
+   ```bash
+   go run ./cmd/server
+   ```
 
-2. **Run the service:**
-```bash
-go run main.go
-```
+## API
 
-3. **Or with flags:**
-```bash
-go run main.go -port=8080 -twilio-sid=AC123... -twilio-token=abc123...
-```
-
-4. **Configure Twilio webhook:**
-Set your Twilio number's voice webhook to: `https://your-domain.com/twilio/voice`
-
-## Configuration
-
-Environment variables or command line flags:
-
-```bash
-TWILIO_ACCOUNT_SID / -twilio-sid     # Your Twilio Account SID
-TWILIO_AUTH_TOKEN / -twilio-token    # Your Twilio Auth Token
-PORT / -port                         # HTTP server port (default: 8080)
-SUPABASE_URL / -supabase-url         # Your Supabase project URL
-SUPABASE_SERVICE_ROLE_KEY / -supabase-key  # Supabase service role key
-SUPABASE_BUCKET / -supabase-bucket   # Storage bucket (default: voice-recording)
-```
-
-## Architecture
-
-Clean, focused packages with single responsibilities:
-
-```
-call-demo/
-├── main.go           # Composition root - wires everything together
-├── config/           # Configuration loading (env vars + flags)
-│   └── config.go
-├── twilio/           # Twilio domain - webhooks, auth, API calls
-│   └── twilio.go
-├── supabase/         # Storage domain - file uploads
-│   └── storage.go
-├── go.mod
-└── env.example
-```
-
-### Package Responsibilities
-
-- **`main.go`**: High-level composition, dependency injection, HTTP server setup
-- **`config/`**: Load and validate configuration from environment/flags
-- **`twilio/`**: All Twilio-related functionality (webhooks, auth, recording API)
-- **`supabase/`**: Storage operations and Supabase API interactions
-
-## API Endpoints
-
-- `POST /twilio/voice` - Main voice webhook (handles incoming calls)
-- `POST /twilio/recording-status` - Recording completion callback
-- `GET /health` - Health check
+- POST `/call`
+  - Request body:
+    ```json
+    { "type": "offer", "sdp": "..." }
+    ```
+  - Response body:
+    ```json
+    { "type": "answer", "sdp": "..." }
+    ```
 
 ## How It Works
 
-1. Incoming call triggers `/twilio/voice` webhook in `twilio` package
-2. Twilio service validates signature and starts call recording
-3. Returns TwiML response to handle the call
-4. When recording completes, Twilio calls `/twilio/recording-status`
-5. Twilio service downloads recording and uploads via `supabase` package
+1. **WebRTC Connection:** Client establishes peer connection for audio streaming
+2. **Audio Capture:** Server receives Opus-encoded audio via RTP packets  
+3. **Transcription:** Audio is streamed to AssemblyAI for real-time transcription
+4. **Data Channel:** Live transcripts are sent back via WebRTC data channels
+
+## Demo
+
+A live demo is available in the `super/` project. See `super/DEMO.md` for instructions.
+
+## Notes
+
+- Currently sends Opus-encoded audio directly to AssemblyAI (may not work optimally)
+- For production: decode Opus to PCM at 16kHz before sending to AssemblyAI
+- Uses STUN servers for NAT traversal
+- WebRTC data channels provide bidirectional text communication
