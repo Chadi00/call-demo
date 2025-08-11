@@ -11,7 +11,6 @@ import (
 	"time"
 )
 
-// CerebrasClient provides access to Cerebras Chat Completions API.
 type CerebrasClient struct {
 	HTTPClient *http.Client
 	APIKey     string
@@ -51,7 +50,6 @@ func NewCerebrasClient(apiKey, model string) *CerebrasClient {
 	}
 }
 
-// Generate runs a single chat completion and returns the assistant's reply text.
 func (c *CerebrasClient) Generate(ctx context.Context, prompt string) (string, error) {
 	if c.APIKey == "" {
 		return "", fmt.Errorf("cerebras api key missing")

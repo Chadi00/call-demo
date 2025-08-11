@@ -9,7 +9,6 @@ import (
 	"github.com/pion/webrtc/v3/pkg/media"
 )
 
-// OpusPacedWriter encodes incoming 48kHz PCM mono to Opus frames and writes them paced to a WebRTC track.
 type OpusPacedWriter struct {
 	enc          *opus.Encoder
 	track        *webrtc.TrackLocalStaticSample
@@ -21,7 +20,6 @@ type OpusPacedWriter struct {
 	mu           sync.Mutex
 }
 
-// NewOpusPacedWriter constructs a paced writer with 20ms frames at 48kHz mono.
 func NewOpusPacedWriter(track *webrtc.TrackLocalStaticSample) (*OpusPacedWriter, error) {
 	enc, err := opus.NewEncoder(48000, 1, opus.AppVoIP)
 	if err != nil {
@@ -38,18 +36,12 @@ func NewOpusPacedWriter(track *webrtc.TrackLocalStaticSample) (*OpusPacedWriter,
 	return w, nil
 }
 
-// WritePCM buffers PCM 48kHz mono data and emits encoded Opus frames paced to the track.
 func (w *OpusPacedWriter) WritePCM(pcmBytes []byte) {
 	if len(pcmBytes) < 2 {
 		return
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	// log buffer state
-	// Note: keep logging minimal to avoid audio glitches
-	// backlog := len(w.frames)
-	// if backlog > cap(w.frames)/2 { log.Printf("writer backlog=%d/%d", backlog, cap(w.frames)) }
-	// Convert bytes to int16 and append to pcmBuf
 	need := len(pcmBytes) / 2
 	startLen := len(w.pcmBuf)
 	if cap(w.pcmBuf)-startLen < need {
@@ -62,7 +54,6 @@ func (w *OpusPacedWriter) WritePCM(pcmBytes []byte) {
 		w.pcmBuf[startLen+i] = int16(uint16(pcmBytes[2*i]) | uint16(pcmBytes[2*i+1])<<8)
 	}
 
-	// Encode full frames
 	opusBuf := make([]byte, 4000)
 	for len(w.pcmBuf) >= w.frameSamples {
 		frame := w.pcmBuf[:w.frameSamples]
@@ -77,12 +68,10 @@ func (w *OpusPacedWriter) WritePCM(pcmBytes []byte) {
 	}
 }
 
-// FlushTail pads the remaining PCM to a full frame and adds a short silence tail to avoid clipping.
 func (w *OpusPacedWriter) FlushTail() {
 	w.mu.Lock()
 	opusBuf := make([]byte, 4000)
 	if len(w.pcmBuf) > 0 {
-		// zero-pad to full frame
 		pad := make([]int16, w.frameSamples)
 		copy(pad, w.pcmBuf)
 		n, _ := w.enc.Encode(pad, opusBuf)
@@ -94,7 +83,6 @@ func (w *OpusPacedWriter) FlushTail() {
 		w.pcmBuf = w.pcmBuf[:0]
 	}
 	w.mu.Unlock()
-	// add ~200ms of silence (10 frames)
 	silence := make([]int16, w.frameSamples)
 	for i := 0; i < 10; i++ {
 		n, _ := w.enc.Encode(silence, opusBuf)
@@ -106,7 +94,6 @@ func (w *OpusPacedWriter) FlushTail() {
 	}
 }
 
-// Close stops the pacer.
 func (w *OpusPacedWriter) Close() {
 	w.mu.Lock()
 	if !w.stopped {
@@ -133,7 +120,6 @@ func (w *OpusPacedWriter) pacer() {
 	}
 }
 
-// pushFrame enqueues a frame, blocking until space is available or stopped.
 func (w *OpusPacedWriter) pushFrame(pkt []byte) {
 	for {
 		select {
@@ -145,10 +131,8 @@ func (w *OpusPacedWriter) pushFrame(pkt []byte) {
 	}
 }
 
-// Reset clears any queued frames to support immediate barge-in.
 func (w *OpusPacedWriter) Reset() {
 	w.mu.Lock()
-	// Drain frames channel quickly
 	for {
 		select {
 		case <-w.frames:

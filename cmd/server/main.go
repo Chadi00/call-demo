@@ -14,7 +14,6 @@ import (
 )
 
 func main() {
-	// Include sub-second precision in all log timestamps
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
 
 	cfg := config.Load()
@@ -28,14 +27,12 @@ func main() {
 		IdleTimeout:       60 * time.Second,
 	}
 
-	// Start server in background
 	serverErrors := make(chan error, 1)
 	go func() {
 		log.Printf("server listening on %s", cfg.HTTPAddress)
 		serverErrors <- server.ListenAndServe()
 	}()
 
-	// Graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 

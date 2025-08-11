@@ -18,22 +18,19 @@ import (
 	"github.com/hraban/opus"
 	"github.com/pion/interceptor"
 	"github.com/pion/webrtc/v3"
-	// "github.com/pion/webrtc/v3/pkg/media"
 )
 
-// SessionDescription is a small DTO to avoid exposing webrtc types in transport.
 type SessionDescription struct {
 	Type string `json:"type"`
 	SDP  string `json:"sdp"`
 }
 
-// Handler manages WebRTC peer connections and implements live transcription.
 type Handler struct {
 	assemblyAIKey  string
 	cerebrasAPIKey string
 	llmModel       string
-    deepgramAPIKey string
-    deepgramModel  string
+	deepgramAPIKey string
+	deepgramModel  string
 }
 
 func NewHandler(assemblyAIKey string) *Handler { return &Handler{assemblyAIKey: assemblyAIKey} }
@@ -42,11 +39,10 @@ func (h *Handler) WithLLM(apiKey, model string) *Handler {
 	return h
 }
 func (h *Handler) WithTTS(apiKey, model string) *Handler {
-    h.deepgramAPIKey, h.deepgramModel = apiKey, model
+	h.deepgramAPIKey, h.deepgramModel = apiKey, model
 	return h
 }
 
-// HandleOffer accepts an SDP offer and returns an SDP answer.
 func (h *Handler) HandleOffer(ctx context.Context, offer SessionDescription) (SessionDescription, error) {
 	if offer.Type != "offer" || offer.SDP == "" {
 		return SessionDescription{}, errors.New("invalid offer")
@@ -79,10 +75,9 @@ func (h *Handler) HandleOffer(ctx context.Context, offer SessionDescription) (Se
 		return SessionDescription{}, err
 	}
 
-	// Build services
 	transcriptionService := transcript.NewAssemblyAIService(h.assemblyAIKey)
 	llmClient := llm.NewCerebrasClient(h.cerebrasAPIKey, ifEmpty(h.llmModel, "llama-4-maverick-17b-128e-instruct"))
-    ttsClient := tts.NewDeepgramClient(h.deepgramAPIKey, h.deepgramModel)
+	ttsClient := tts.NewDeepgramClient(h.deepgramAPIKey, h.deepgramModel)
 
 	type convoTurn struct {
 		Role, Text string
@@ -108,7 +103,6 @@ func (h *Handler) HandleOffer(ctx context.Context, offer SessionDescription) (Se
 		}
 	})
 
-	// Use a control channel instead of transcript streaming; client can send stop commands
 	var sessPtr atomic.Pointer[agent.Session]
 	var pacedPtr atomic.Pointer[OpusPacedWriter]
 	peerConnection.OnDataChannel(func(dc *webrtc.DataChannel) {
@@ -137,7 +131,6 @@ func (h *Handler) HandleOffer(ctx context.Context, offer SessionDescription) (Se
 		}
 		log.Printf("[%s] Remote audio track received: codec=%s", callID, remote.Codec().MimeType)
 
-		// Prepare paced writer for outgoing agent audio
 		paced, err := NewOpusPacedWriter(outTrack)
 		if err != nil {
 			log.Printf("[%s] Opus encoder error: %v", callID, err)
@@ -148,19 +141,15 @@ func (h *Handler) HandleOffer(ctx context.Context, offer SessionDescription) (Se
 		const (
 			pcm16kChunkBytes = 3200
 			opusFrameSamples = 960
-			pacerInterval    = 20 * time.Millisecond
 		)
 		pcm16kBuf := make([]byte, 0, pcm16kChunkBytes*4)
-		// removed previous 48k buffer path; pacing via writer
 
-		// Send a short beep once to verify audio path
 		go func() {
 			const beepDuration = 300 * time.Millisecond
 			samplesTotal := int(48000 * beepDuration / time.Second)
 			phase := 0.0
 			phaseInc := 2 * math.Pi * 440.0 / 48000.0
 			beepFrame := make([]int16, opusFrameSamples)
-			// opusBufBeep removed; using paced writer
 			for generated := 0; generated < samplesTotal; generated += opusFrameSamples {
 				for i := 0; i < opusFrameSamples; i++ {
 					if generated+i >= samplesTotal {
@@ -176,9 +165,6 @@ func (h *Handler) HandleOffer(ctx context.Context, offer SessionDescription) (Se
 					beepFrame[i] = int16(v)
 					phase += phaseInc
 				}
-				// write directly through paced writer
-				// encode using separate encoder to avoid disturbing main writer; small optimization skipped
-				// we reuse paced.WritePCM by providing 48k PCM bytes
 				tmp := make([]byte, opusFrameSamples*2)
 				for i := 0; i < opusFrameSamples; i++ {
 					v := uint16(beepFrame[i])
@@ -189,22 +175,19 @@ func (h *Handler) HandleOffer(ctx context.Context, offer SessionDescription) (Se
 			}
 		}()
 
-		// Build orchestrator
 		sess := agent.NewSession(
 			transcriptionService,
 			llmClient,
 			ttsClient,
 			paced,
-			nil, // live partials not used in this demo
+			nil,
 			func(user, assistantSpoken string) {
-				// Append only what was actually spoken by TTS; if interrupted the text includes marker
 				transcriptMu.Lock()
 				turns = append(turns, convoTurn{Role: "USER", Text: user, At: time.Now()})
 				if assistantSpoken != "" {
 					turns = append(turns, convoTurn{Role: "ASSISTANT", Text: assistantSpoken, At: time.Now()})
 				}
 				transcriptMu.Unlock()
-				// Also log the spoken text for operator visibility
 				if assistantSpoken != "" {
 					log.Printf("[%s] SPOKEN assistant: %s", callID, assistantSpoken)
 				} else {
@@ -214,7 +197,6 @@ func (h *Handler) HandleOffer(ctx context.Context, offer SessionDescription) (Se
 		)
 		sessPtr.Store(sess)
 
-		// Mic reader (started only if transcription connects)
 		startMicReader := func(dec *opus.Decoder) {
 			go func() {
 				pcmSamples := make([]int16, 1920)
@@ -257,7 +239,6 @@ func (h *Handler) HandleOffer(ctx context.Context, offer SessionDescription) (Se
 			}()
 		}
 
-		// Barge-in detection based on recent voice activity (VAD), not partial text.
 		var speaking int32 // 0 false, 1 true
 		doneCh := make(chan struct{})
 		peerConnection.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
@@ -276,7 +257,6 @@ func (h *Handler) HandleOffer(ctx context.Context, offer SessionDescription) (Se
 				select {
 				case <-ticker.C:
 					if atomic.LoadInt32(&speaking) == 1 && sess.IsSpeaking() {
-						// If we detected voice within the last 150ms, treat as barge-in
 						if transcriptionService.RecentlyDetectedVoice(150 * time.Millisecond) {
 							log.Printf("[%s] barge-in: canceling TTS (VAD)", callID)
 							sess.BargeIn()
@@ -290,11 +270,9 @@ func (h *Handler) HandleOffer(ctx context.Context, offer SessionDescription) (Se
 			}
 		}()
 
-		// Try to connect and start orchestrator
 		if err := transcriptionService.Connect(); err != nil {
 			log.Printf("[%s] Failed to connect to AssemblyAI (assistant replies disabled): %v", callID, err)
 		} else {
-			// Create decoder for incoming mic audio only after successful connect
 			dec, derr := opus.NewDecoder(16000, 1)
 			if derr != nil {
 				log.Printf("[%s] Opus decoder error: %v", callID, derr)
@@ -306,9 +284,7 @@ func (h *Handler) HandleOffer(ctx context.Context, offer SessionDescription) (Se
 			if err != nil {
 				log.Printf("[%s] session start error: %v", callID, err)
 			}
-			// Track speaking state transitions via FlushTail timing is not explicit; rely on sess.IsSpeaking
 			go func() {
-				// lightweight ticker to sample speaking state and expose to atomic flag
 				t := time.NewTicker(20 * time.Millisecond)
 				defer t.Stop()
 				for {
@@ -324,7 +300,6 @@ func (h *Handler) HandleOffer(ctx context.Context, offer SessionDescription) (Se
 					}
 				}
 			}()
-			// ensure cleanup on close; allow frames to drain before closing
 			peerConnection.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 				if state == webrtc.PeerConnectionStateClosed || state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateDisconnected {
 					cancelSess()

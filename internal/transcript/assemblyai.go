@@ -15,21 +15,12 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// SILENCE_THRESHOLD is the base inactivity window required before we consider an utterance complete.
-// Keep conservative to avoid cutting user mid-sentence.
 const SILENCE_THRESHOLD = 700 * time.Millisecond
 
-// CONTINUATION_EXTENSION is added to the silence threshold when the last word
-// suggests the user is likely to continue the sentence (e.g., "and", "or", "if").
-// CONTINUATION_EXTENSION extends the threshold when the last word implies continuation.
 const CONTINUATION_EXTENSION = 1200 * time.Millisecond
 
-// STABILIZATION_GRACE waits a little after crossing the silence threshold to
-// absorb any late transcript updates from the ASR before finalizing.
-// STABILIZATION_GRACE absorbs late ASR updates.
 const STABILIZATION_GRACE = 250 * time.Millisecond
 
-// AssemblyAI streaming transcription service
 type AssemblyAIService struct {
 	apiKey      string
 	conn        *websocket.Conn
@@ -40,18 +31,14 @@ type AssemblyAIService struct {
 	mu          sync.RWMutex
 	connected   bool
 
-	// utterance accumulation
 	accMu                   sync.Mutex
 	latestFullTranscript    string
 	committedFullTranscript string
 	lastUpdateTime          time.Time
-	// resettable timer to detect end-of-utterance based on inactivity
-	silenceTimer *time.Timer
-	// last time we detected non-silent voice energy in the incoming PCM
-	lastVoiceTime time.Time
+	silenceTimer            *time.Timer
+	lastVoiceTime           time.Time
 }
 
-// AssemblyAI message types
 type BeginMessage struct {
 	Type      string `json:"type"`
 	ID        string `json:"id"`
@@ -77,7 +64,6 @@ type ErrorMessage struct {
 	Error string `json:"error"`
 }
 
-// NewAssemblyAIService creates a new transcription service
 func NewAssemblyAIService(apiKey string) *AssemblyAIService {
 	s := &AssemblyAIService{
 		apiKey:      apiKey,
@@ -89,10 +75,8 @@ func NewAssemblyAIService(apiKey string) *AssemblyAIService {
 	return s
 }
 
-// Finalize returns a channel signaling end-of-utterance with the delta text
 func (s *AssemblyAIService) Finalize() <-chan string { return s.finalizeCh }
 
-// Connect establishes WebSocket connection to AssemblyAI
 func (s *AssemblyAIService) Connect() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -105,7 +89,6 @@ func (s *AssemblyAIService) Connect() error {
 		return fmt.Errorf("AssemblyAI API key is empty")
 	}
 
-	// Connection parameters
 	params := url.Values{}
 	params.Set("sample_rate", "16000")
 	params.Set("format_turns", "false")
@@ -139,23 +122,19 @@ func (s *AssemblyAIService) Connect() error {
 	s.lastUpdateTime = time.Now()
 	s.lastVoiceTime = time.Now()
 
-	// Start goroutines for handling messages and audio
 	go s.handleMessages()
 	go s.sendAudioData()
-	// silence is now detected via a resettable timer started on each Turn
 
 	log.Println("Successfully connected to AssemblyAI streaming service")
 	return nil
 }
 
-// SendAudio queues audio data to be sent to AssemblyAI
 func (s *AssemblyAIService) SendAudio(audioData []byte) error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if !s.connected {
 		return fmt.Errorf("not connected to AssemblyAI")
 	}
-	// Heuristic: compute simple RMS to detect voice activity and update lastVoiceTime
 	s.detectVoiceActivity(audioData)
 	select {
 	case s.audioData <- audioData:
@@ -166,17 +145,13 @@ func (s *AssemblyAIService) SendAudio(audioData []byte) error {
 	}
 }
 
-// SendPCM16KLE implements the agent.Transcriber-friendly method name.
 func (s *AssemblyAIService) SendPCM16KLE(pcm []byte) error { return s.SendAudio(pcm) }
 
-// detectVoiceActivity updates lastVoiceTime if PCM buffer contains voice energy above a threshold.
-// Expects 16-bit little-endian PCM mono at 16 kHz.
 func (s *AssemblyAIService) detectVoiceActivity(pcm []byte) {
 	const minSamples = 160 // 10ms at 16kHz
 	if len(pcm) < minSamples*2 {
 		return
 	}
-	// Downsample scan: step to reduce CPU
 	step := 2            // every sample
 	if len(pcm) > 3200 { // if it's a bigger chunk, sample sparsely
 		step = 4
@@ -192,7 +167,6 @@ func (s *AssemblyAIService) detectVoiceActivity(pcm []byte) {
 		return
 	}
 	rms := math.Sqrt(sumSquares / float64(count))
-	// Threshold tuned conservatively; adjust if needed
 	const voiceRMS = 250.0
 	if rms >= voiceRMS {
 		s.accMu.Lock()
@@ -201,13 +175,10 @@ func (s *AssemblyAIService) detectVoiceActivity(pcm []byte) {
 	}
 }
 
-// GetTranscripts returns the channel for receiving transcripts
 func (s *AssemblyAIService) GetTranscripts() <-chan string { return s.transcripts }
 
-// Partials is an alias for GetTranscripts for clarity in barge-in usage
 func (s *AssemblyAIService) Partials() <-chan string { return s.transcripts }
 
-// RecentlyDetectedVoice reports whether non-silent voice energy was observed within the given window.
 func (s *AssemblyAIService) RecentlyDetectedVoice(window time.Duration) bool {
 	s.accMu.Lock()
 	last := s.lastVoiceTime
@@ -215,14 +186,12 @@ func (s *AssemblyAIService) RecentlyDetectedVoice(window time.Duration) bool {
 	return time.Since(last) <= window
 }
 
-// Close closes the connection and cleanup resources
 func (s *AssemblyAIService) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.connected {
 		return nil
 	}
-	// signal shutdown and stop any active timer
 	close(s.stopCh)
 	if s.silenceTimer != nil {
 		_ = s.silenceTimer.Stop()
@@ -235,7 +204,6 @@ func (s *AssemblyAIService) Close() error {
 	}
 	s.connected = false
 	s.conn = nil
-	// Best-effort flush of any pending delta before closing channels
 	s.flushPendingDelta()
 	close(s.audioData)
 	close(s.transcripts)
@@ -244,7 +212,6 @@ func (s *AssemblyAIService) Close() error {
 	return nil
 }
 
-// handleMessages processes incoming WebSocket messages
 func (s *AssemblyAIService) handleMessages() {
 	defer func() {
 		if r := recover(); r != nil {
@@ -272,7 +239,6 @@ func (s *AssemblyAIService) handleMessages() {
 	}
 }
 
-// processMessage handles different message types from AssemblyAI
 func (s *AssemblyAIService) processMessage(message []byte) {
 	var baseMsg map[string]interface{}
 	if err := json.Unmarshal(message, &baseMsg); err != nil {
@@ -300,16 +266,13 @@ func (s *AssemblyAIService) processMessage(message []byte) {
 			return
 		}
 		if msg.Transcript != "" {
-			// stream full transcript fragments for UI
 			select {
 			case s.transcripts <- msg.Transcript:
 			default:
 			}
-			// record latest full transcript
 			s.accMu.Lock()
 			s.latestFullTranscript = msg.Transcript
 			s.lastUpdateTime = time.Now()
-			// reset or start the silence timer; finalize will fire only after inactivity
 			if s.silenceTimer == nil {
 				s.silenceTimer = time.AfterFunc(SILENCE_THRESHOLD, s.finalizeDueToSilence)
 			} else {
@@ -325,7 +288,6 @@ func (s *AssemblyAIService) processMessage(message []byte) {
 			return
 		}
 		log.Printf("AssemblyAI session terminated: AudioDuration=%.2fs, SessionDuration=%.2fs", msg.AudioDurationSeconds, msg.SessionDurationSeconds)
-		// Flush any pending delta so last words are not lost
 		s.flushPendingDelta()
 	case "Error":
 		var msg ErrorMessage
@@ -339,20 +301,15 @@ func (s *AssemblyAIService) processMessage(message []byte) {
 	}
 }
 
-// finalizeDueToSilence is invoked after SILENCE_THRESHOLD of inactivity.
-// It emits only the delta since the last committed transcript, if significant.
 func (s *AssemblyAIService) finalizeDueToSilence() {
-	// If we're shutting down, do nothing to avoid sends on closed channels
 	select {
 	case <-s.stopCh:
 		return
 	default:
 	}
 
-	// First pass check
 	s.accMu.Lock()
 	now := time.Now()
-	// Dynamically extend threshold for continuation-like endings
 	threshold := SILENCE_THRESHOLD
 	if isContinuationLikely(s.latestFullTranscript) {
 		threshold += CONTINUATION_EXTENSION
@@ -360,7 +317,6 @@ func (s *AssemblyAIService) finalizeDueToSilence() {
 	sinceText := now.Sub(s.lastUpdateTime)
 	sinceVoice := now.Sub(s.lastVoiceTime)
 	if sinceText < threshold || sinceVoice < threshold {
-		// Not enough inactivity; reschedule the timer for the remaining time window
 		wait := threshold
 		if rem := threshold - sinceText; sinceText < threshold && rem < wait {
 			wait = rem
@@ -381,23 +337,18 @@ func (s *AssemblyAIService) finalizeDueToSilence() {
 		return
 	}
 
-	// Snapshot last update time and release lock to wait for stabilization
 	lastUpdateAt := s.lastUpdateTime
 	s.accMu.Unlock()
 
-	// Grace period to catch late transcript updates
 	time.Sleep(STABILIZATION_GRACE)
 
-	// Second pass validation after grace
 	s.accMu.Lock()
 	now2 := time.Now()
-	// Recompute threshold as transcript may have changed
 	threshold2 := SILENCE_THRESHOLD
 	if isContinuationLikely(s.latestFullTranscript) {
 		threshold2 += CONTINUATION_EXTENSION
 	}
 	if s.lastUpdateTime.After(lastUpdateAt) {
-		// A late update arrived during grace; push the timer forward from now
 		wait := threshold2
 		if rem := threshold2 - now2.Sub(s.lastUpdateTime); rem > 10*time.Millisecond && rem < wait {
 			wait = rem
@@ -426,7 +377,6 @@ func (s *AssemblyAIService) finalizeDueToSilence() {
 	if strings.TrimSpace(delta) == "" {
 		return
 	}
-	// Deliver without dropping to guarantee every word is sent downstream.
 	select {
 	case <-s.stopCh:
 		return
@@ -434,8 +384,6 @@ func (s *AssemblyAIService) finalizeDueToSilence() {
 	}
 }
 
-// flushPendingDelta sends any remaining uncommitted transcript delta.
-// It is best-effort and will not block indefinitely on shutdown.
 func (s *AssemblyAIService) flushPendingDelta() {
 	s.accMu.Lock()
 	latest := s.latestFullTranscript
@@ -458,8 +406,6 @@ func (s *AssemblyAIService) flushPendingDelta() {
 	}
 }
 
-// isContinuationLikely returns true if the last meaningful word indicates the
-// speaker is likely to continue (conjunctions, prepositions, fillers).
 func isContinuationLikely(text string) bool {
 	w := lastWord(text)
 	if w == "" {
@@ -474,7 +420,6 @@ func lastWord(text string) string {
 	if trim == "" {
 		return ""
 	}
-	// Split on non-letters to extract words
 	fields := strings.FieldsFunc(trim, func(r rune) bool { return !unicode.IsLetter(r) })
 	if len(fields) == 0 {
 		return ""
@@ -483,18 +428,13 @@ func lastWord(text string) string {
 }
 
 var continuationWords = map[string]struct{}{
-	// Coordinating conjunctions
 	"and": {}, "or": {}, "but": {}, "nor": {}, "yet": {}, "so": {},
-	// Subordinating conjunctions / conditionals
 	"if": {}, "when": {}, "while": {}, "though": {}, "although": {},
 	"because": {}, "since": {}, "unless": {}, "until": {}, "whereas": {},
-	// Discourse markers / fillers
 	"also": {}, "plus": {}, "um": {}, "uh": {}, "like": {},
-	// Common prepositions that are awkward sentence endings; extend to await continuation
 	"about": {}, "with": {}, "to": {}, "of": {}, "for": {}, "on": {}, "in": {}, "at": {},
 }
 
-// sendAudioData sends queued audio data to AssemblyAI
 func (s *AssemblyAIService) sendAudioData() {
 	defer func() {
 		if r := recover(); r != nil {

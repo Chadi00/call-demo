@@ -24,15 +24,10 @@ import (
 	"github.com/pion/webrtc/v3"
 )
 
-// realtimeWSMessage is a minimal signaling message format compatible with common Realtime APIs.
-// Types: "auth", "offer", "answer", "candidate", "ice-complete", "bye", "error".
 type realtimeWSMessage struct {
-	Type string `json:"type"`
-	// auth
-	Password string `json:"password,omitempty"`
-	// offer/answer
-	SDP string `json:"sdp,omitempty"`
-	// candidate
+	Type          string  `json:"type"`
+	Password      string  `json:"password,omitempty"`
+	SDP           string  `json:"sdp,omitempty"`
 	Candidate     string  `json:"candidate,omitempty"`
 	SDPMid        *string `json:"sdpMid,omitempty"`
 	SDPMLineIndex *uint16 `json:"sdpMLineIndex,omitempty"`
@@ -42,13 +37,10 @@ var wsUpgrader = websocket.Upgrader{
 	ReadBufferSize:  65536,
 	WriteBufferSize: 65536,
 	CheckOrigin: func(r *http.Request) bool {
-		// Allow any origin for demo use; restrict in production
 		return true
 	},
 }
 
-// ServeWebSocket upgrades to WebSocket and performs offer/answer + trickle ICE signaling.
-// It expects messages: auth(optional) -> offer -> candidates... and responds with answer + candidates.
 func (h *Handler) ServeWebSocket(w http.ResponseWriter, r *http.Request, iceServersJSON string, authPassword string) {
 	conn, err := wsUpgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -57,10 +49,8 @@ func (h *Handler) ServeWebSocket(w http.ResponseWriter, r *http.Request, iceServ
 	}
 	defer func() { _ = conn.Close() }()
 
-	// Simple auth: Authorization: Bearer <pwd> or ?password=... or first message type=auth
 	if authPassword != "" {
 		if !checkAuthHeaderOrQuery(r, authPassword) {
-			// fall back to waiting for an auth message as first frame
 			mt, data, rerr := conn.ReadMessage()
 			if rerr != nil {
 				_ = writeWSJSON(conn, realtimeWSMessage{Type: "error"}, fmt.Errorf("auth required"))
@@ -78,8 +68,6 @@ func (h *Handler) ServeWebSocket(w http.ResponseWriter, r *http.Request, iceServ
 		}
 	}
 
-	// Expect an offer next (or again if auth was pre-checked)
-	// If auth already consumed the first message, we proceed to read until offer
 	var offerSDP string
 	for {
 		mt, data, rerr := conn.ReadMessage()
@@ -103,21 +91,18 @@ func (h *Handler) ServeWebSocket(w http.ResponseWriter, r *http.Request, iceServ
 		}
 	}
 
-	// Build Pion API with ICE servers
 	pcs, api, outTrack, cleanup, err := h.createPeerWithServices(iceServersJSON)
 	if err != nil {
 		_ = writeWSJSON(conn, realtimeWSMessage{Type: "error"}, err)
 		return
 	}
 	defer cleanup()
-	_ = api // reserved for advanced use (stats, setting engine)
+	_ = api
 
 	callID := generateCallID()
 
-	// Trickle local candidates to client
 	pcs.OnICECandidate(func(c *webrtc.ICECandidate) {
 		if c == nil {
-			// signal end of candidates
 			_ = writeWS(conn, realtimeWSMessage{Type: "ice-complete"})
 			return
 		}
@@ -126,7 +111,6 @@ func (h *Handler) ServeWebSocket(w http.ResponseWriter, r *http.Request, iceServ
 		_ = writeWS(conn, msg)
 	})
 
-	// Allow receiving remote trickle candidates from client
 	go func() {
 		for {
 			_, data, rerr := conn.ReadMessage()
@@ -150,7 +134,6 @@ func (h *Handler) ServeWebSocket(w http.ResponseWriter, r *http.Request, iceServ
 		}
 	}()
 
-	// Complete PC setup and send answer
 	remoteOffer := webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: offerSDP}
 	if err := pcs.SetRemoteDescription(remoteOffer); err != nil {
 		_ = writeWSJSON(conn, realtimeWSMessage{Type: "error"}, err)
@@ -175,11 +158,8 @@ func (h *Handler) ServeWebSocket(w http.ResponseWriter, r *http.Request, iceServ
 		return
 	}
 
-	// Bind media handlers (reusing logic from HandleOffer's OnTrack and session orchestration)
-	// We need to replicate critical parts here to avoid blocking answer creation.
 	h.attachMediaHandlers(callID, pcs, outTrack)
 
-	// Keep the goroutine alive until PC closes; OnConnectionStateChange handles cleanup
 	for {
 		time.Sleep(2 * time.Second)
 		state := pcs.ConnectionState()
@@ -216,15 +196,12 @@ func writeWS(conn *websocket.Conn, v interface{}) error {
 func writeWSJSON(conn *websocket.Conn, base realtimeWSMessage, err error) error {
 	if err != nil {
 		base.Type = "error"
-		// Include a minimal error description
 		msg := map[string]string{"type": base.Type, "error": err.Error()}
 		return conn.WriteJSON(msg)
 	}
 	return conn.WriteJSON(base)
 }
 
-// createPeerWithServices prepares a PeerConnection with codecs/interceptors, audio sender track,
-// and returns a cleanup func. Media and session handlers are attached later to avoid blocking.
 func (h *Handler) createPeerWithServices(iceServersJSON string) (*webrtc.PeerConnection, *webrtc.API, *webrtc.TrackLocalStaticSample, func(), error) {
 	mediaEngine := &webrtc.MediaEngine{}
 	if err := mediaEngine.RegisterDefaultCodecs(); err != nil {
@@ -236,7 +213,6 @@ func (h *Handler) createPeerWithServices(iceServersJSON string) (*webrtc.PeerCon
 	}
 	api := webrtc.NewAPI(webrtc.WithMediaEngine(mediaEngine), webrtc.WithInterceptorRegistry(ir))
 
-	// Parse ICE servers from JSON or fallback
 	servers := parseICEServers(iceServersJSON)
 	pcs, err := api.NewPeerConnection(webrtc.Configuration{ICEServers: servers})
 	if err != nil {
@@ -258,11 +234,10 @@ func (h *Handler) createPeerWithServices(iceServersJSON string) (*webrtc.PeerCon
 	return pcs, api, outTrack, cleanup, nil
 }
 
-// attachMediaHandlers wires the OnTrack/session orchestration similar to HandleOffer.
 func (h *Handler) attachMediaHandlers(callID string, peerConnection *webrtc.PeerConnection, outTrack *webrtc.TrackLocalStaticSample) {
 	transcriptionService := transcript.NewAssemblyAIService(h.assemblyAIKey)
 	llmClient := llm.NewCerebrasClient(h.cerebrasAPIKey, ifEmpty(h.llmModel, "llama-4-maverick-17b-128e-instruct"))
-    ttsClient := tts.NewDeepgramClient(h.deepgramAPIKey, h.deepgramModel)
+	ttsClient := tts.NewDeepgramClient(h.deepgramAPIKey, h.deepgramModel)
 	var sessPtr atomic.Pointer[agent.Session]
 	var pacedPtr atomic.Pointer[OpusPacedWriter]
 
@@ -308,12 +283,10 @@ func (h *Handler) attachMediaHandlers(callID string, peerConnection *webrtc.Peer
 		pacedPtr.Store(paced)
 
 		go func() {
-			// short confirmation beep
 			const (
 				opusFrameSamples = 960
 			)
 			beepFrame := make([]int16, opusFrameSamples)
-			// 440hz sine for ~200ms
 			samplesTotal := int(48000 * 200 / 1000)
 			phase := 0.0
 			phaseInc := 2 * 3.14159 * 440.0 / 48000.0
@@ -336,7 +309,6 @@ func (h *Handler) attachMediaHandlers(callID string, peerConnection *webrtc.Peer
 			}
 		}()
 
-		// Connect STT and start session only after we have remote track
 		if err := transcriptionService.Connect(); err != nil {
 			log.Printf("[%s] Failed to connect to AssemblyAI: %v", callID, err)
 			return
@@ -366,7 +338,6 @@ func (h *Handler) attachMediaHandlers(callID string, peerConnection *webrtc.Peer
 			log.Printf("[%s] session start error: %v", callID, err)
 		}
 
-		// Cleanup on PC close
 		peerConnection.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 			if state == webrtc.PeerConnectionStateClosed || state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateDisconnected {
 				cancelSess()
@@ -424,9 +395,7 @@ func parseICEServers(iceJSON string) []webrtc.ICEServer {
 	return []webrtc.ICEServer{{URLs: []string{"stun:stun.l.google.com:19302"}}}
 }
 
-// Helper sine with phase accumulation for beep
 func sinf(phase *float64, inc float64) float64 {
-	// Simple Taylor is fine here; using math.Sin directly for clarity
 	v := math.Sin(*phase)
 	*phase += inc
 	return v

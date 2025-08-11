@@ -7,22 +7,17 @@ import (
 	"github.com/joho/godotenv"
 )
 
-// Config holds application configuration.
 type Config struct {
-	HTTPAddress       string
-	AssemblyAIKey     string
-	CerebrasKey       string
-	CerebrasModelID   string
-    DeepgramKey       string
-    DeepgramTTSModel  string
-	// AuthPassword secures realtime WS signaling; if empty, auth is disabled
-	AuthPassword string
-	// ICEServersJSON is a JSON array of ICE server objects compatible with WebRTC
-	// example: [{"urls":["stun:stun.l.google.com:19302"]}] or TURN entries with username/credential
-	ICEServersJSON string
+	HTTPAddress      string
+	AssemblyAIKey    string
+	CerebrasKey      string
+	CerebrasModelID  string
+	DeepgramKey      string
+	DeepgramTTSModel string
+	AuthPassword     string
+	ICEServersJSON   string
 }
 
-// Load reads environment variables and returns Config with sane defaults.
 func Load() Config {
 	err := godotenv.Load()
 	if err != nil {
@@ -48,14 +43,14 @@ func Load() Config {
 		log.Println("Warning: CEREBRAS_API_KEY not set - LLM will not work")
 	}
 
-    deepgramKey := os.Getenv("DEEPGRAM_API_KEY")
-    if deepgramKey == "" {
-        log.Println("Warning: DEEPGRAM_API_KEY not set - TTS will not work")
-    }
-    deepgramModel := os.Getenv("DEEPGRAM_TTS_MODEL")
-    if deepgramModel == "" {
-        deepgramModel = "aura-2-thalia-en"
-    }
+	deepgramKey := os.Getenv("DEEPGRAM_API_KEY")
+	if deepgramKey == "" {
+		log.Println("Warning: DEEPGRAM_API_KEY not set - TTS will not work")
+	}
+	deepgramModel := os.Getenv("DEEPGRAM_TTS_MODEL")
+	if deepgramModel == "" {
+		deepgramModel = "aura-2-thalia-en"
+	}
 
 	authPassword := os.Getenv("AUTH_PASSWORD")
 	if authPassword == "" {
@@ -64,19 +59,18 @@ func Load() Config {
 
 	iceServersJSON := os.Getenv("ICE_SERVERS_JSON")
 	if iceServersJSON == "" {
-		// default to public Google STUN
 		iceServersJSON = `[{"urls":["stun:stun.l.google.com:19302"]}]`
 	}
 
 	log.Printf("config: HTTP_ADDRESS=%s", addr)
 	return Config{
-		HTTPAddress:       addr,
-		AssemblyAIKey:     assemblyAIKey,
-		CerebrasKey:       cerebrasKey,
-		CerebrasModelID:   cerebrasModel,
-        DeepgramKey:       deepgramKey,
-        DeepgramTTSModel:  deepgramModel,
-		AuthPassword:      authPassword,
-		ICEServersJSON:    iceServersJSON,
+		HTTPAddress:      addr,
+		AssemblyAIKey:    assemblyAIKey,
+		CerebrasKey:      cerebrasKey,
+		CerebrasModelID:  cerebrasModel,
+		DeepgramKey:      deepgramKey,
+		DeepgramTTSModel: deepgramModel,
+		AuthPassword:     authPassword,
+		ICEServersJSON:   iceServersJSON,
 	}
 }
