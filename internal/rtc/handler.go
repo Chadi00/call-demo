@@ -32,8 +32,8 @@ type Handler struct {
 	assemblyAIKey  string
 	cerebrasAPIKey string
 	llmModel       string
-	elevenAPIKey   string
-	elevenVoiceID  string
+    deepgramAPIKey string
+    deepgramModel  string
 }
 
 func NewHandler(assemblyAIKey string) *Handler { return &Handler{assemblyAIKey: assemblyAIKey} }
@@ -41,8 +41,8 @@ func (h *Handler) WithLLM(apiKey, model string) *Handler {
 	h.cerebrasAPIKey, h.llmModel = apiKey, model
 	return h
 }
-func (h *Handler) WithTTS(apiKey, voiceID string) *Handler {
-	h.elevenAPIKey, h.elevenVoiceID = apiKey, voiceID
+func (h *Handler) WithTTS(apiKey, model string) *Handler {
+    h.deepgramAPIKey, h.deepgramModel = apiKey, model
 	return h
 }
 
@@ -82,7 +82,7 @@ func (h *Handler) HandleOffer(ctx context.Context, offer SessionDescription) (Se
 	// Build services
 	transcriptionService := transcript.NewAssemblyAIService(h.assemblyAIKey)
 	llmClient := llm.NewCerebrasClient(h.cerebrasAPIKey, ifEmpty(h.llmModel, "llama-4-maverick-17b-128e-instruct"))
-	ttsClient := tts.NewElevenLabsClient(h.elevenAPIKey, h.elevenVoiceID)
+    ttsClient := tts.NewDeepgramClient(h.deepgramAPIKey, h.deepgramModel)
 
 	type convoTurn struct {
 		Role, Text string

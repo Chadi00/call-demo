@@ -3,6 +3,7 @@ module github.com/chadiek/call-demo
 go 1.22.0
 
 require (
+	github.com/deepgram/deepgram-go-sdk v1.9.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/hraban/opus v0.0.0-20230925203106-0188a62cb302
 	github.com/joho/godotenv v1.5.1
@@ -12,7 +13,14 @@ require (
 
 require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/dvonthenen/websocket v1.5.1-dyv.2 // indirect
+	github.com/fatih/color v1.15.0 // indirect
+	github.com/go-logr/logr v1.3.0 // indirect
 	github.com/google/uuid v1.3.1 // indirect
+	github.com/gorilla/schema v1.3.0 // indirect
+	github.com/hokaccha/go-prettyjson v0.0.0-20211117102719-0474bc63780f // indirect
+	github.com/mattn/go-colorable v0.1.13 // indirect
+	github.com/mattn/go-isatty v0.0.17 // indirect
 	github.com/pion/datachannel v1.5.5 // indirect
 	github.com/pion/dtls/v2 v2.2.7 // indirect
 	github.com/pion/ice/v2 v2.3.15 // indirect
@@ -33,4 +41,5 @@ require (
 	golang.org/x/net v0.22.0 // indirect
 	golang.org/x/sys v0.18.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
+	k8s.io/klog/v2 v2.110.1 // indirect
 )
