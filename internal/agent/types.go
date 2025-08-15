@@ -27,3 +27,17 @@ type PCM48kSink interface {
 	FlushTail()
 	Reset()
 }
+
+// BargeEngine is a minimal interface the session uses to cooperate with
+// a barge-in detector. It avoids coupling to implementation details.
+type BargeEngine interface {
+	// NotifyPartial provides latest running transcript text.
+	NotifyPartial(text string)
+	// FeedTTS48k feeds 48kHz PCM16LE frames that are being sent to the user.
+	FeedTTS48k(pcm []byte)
+	// NotifyTTSText provides the text currently being spoken so the engine can
+	// discount echo in its ASR growth heuristic.
+	NotifyTTSText(text string)
+	// SetSpeaking toggles whether the agent is currently speaking.
+	SetSpeaking(on bool)
+}

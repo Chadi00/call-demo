@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/chadiek/call-demo/internal/config"
 	"github.com/chadiek/call-demo/internal/rtc"
@@ -82,8 +83,11 @@ func rtcAuthOK(r *http.Request, expected string) bool {
 		return true
 	}
 	if ah := r.Header.Get("Authorization"); len(ah) > 7 {
-		if ah[:7] == "Bearer " && ah[7:] == expected {
-			return true
+		low := strings.ToLower(ah)
+		if strings.HasPrefix(low, "bearer ") {
+			if strings.TrimSpace(ah[7:]) == expected {
+				return true
+			}
 		}
 	}
 	return false

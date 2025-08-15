@@ -9,9 +9,14 @@ import (
 	"github.com/pion/webrtc/v3/pkg/media"
 )
 
+// sampleWriter abstracts the WriteSample method used by the pacer, enabling testing without a real webrtc track.
+type sampleWriter interface {
+	WriteSample(media.Sample) error
+}
+
 type OpusPacedWriter struct {
 	enc          *opus.Encoder
-	track        *webrtc.TrackLocalStaticSample
+	track        sampleWriter
 	pcmBuf       []int16
 	frameSamples int
 	frames       chan []byte

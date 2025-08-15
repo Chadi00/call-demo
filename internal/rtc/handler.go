@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/chadiek/call-demo/internal/agent"
+	"github.com/chadiek/call-demo/internal/barge"
 	"github.com/chadiek/call-demo/internal/llm"
 	"github.com/chadiek/call-demo/internal/transcript"
 	"github.com/chadiek/call-demo/internal/tts"
@@ -175,6 +176,22 @@ func (h *Handler) HandleOffer(ctx context.Context, offer SessionDescription) (Se
 			}
 		}()
 
+		// Create barge-in engine and wire events
+		be := barge.NewEngine(barge.DefaultWebRTCHeadset(), barge.Events{
+			OnTTSStop: func(ts time.Time) {
+				if s := sessPtr.Load(); s != nil {
+					(*s).BargeIn()
+				}
+				if p := pacedPtr.Load(); p != nil {
+					(*p).Reset()
+				}
+			},
+			OnTrigger: func(ts time.Time, cues barge.Cues, pre []byte) {
+				// Inject pre-roll into ASR stream
+				_ = transcriptionService.SendPCM16KLE(pre)
+			},
+		})
+
 		sess := agent.NewSession(
 			transcriptionService,
 			llmClient,
@@ -194,7 +211,7 @@ func (h *Handler) HandleOffer(ctx context.Context, offer SessionDescription) (Se
 					log.Printf("[%s] SPOKEN assistant: (none)", callID)
 				}
 			},
-		)
+		).WithBargeEngine(be)
 		sessPtr.Store(sess)
 
 		startMicReader := func(dec *opus.Decoder) {
@@ -229,9 +246,11 @@ func (h *Handler) HandleOffer(ctx context.Context, offer SessionDescription) (Se
 					}
 					for len(pcm16kBuf) >= pcm16kChunkBytes {
 						chunk := pcm16kBuf[:pcm16kChunkBytes]
+						// feed mic to ASR and barge engine
 						if err := transcriptionService.SendPCM16KLE(chunk); err != nil {
 							log.Printf("[%s] AAI send error: %v", callID, err)
 						}
+						be.FeedMic16k(chunk)
 						copy(pcm16kBuf, pcm16kBuf[pcm16kChunkBytes:])
 						pcm16kBuf = pcm16kBuf[:len(pcm16kBuf)-pcm16kChunkBytes]
 					}
@@ -239,36 +258,7 @@ func (h *Handler) HandleOffer(ctx context.Context, offer SessionDescription) (Se
 			}()
 		}
 
-		var speaking int32 // 0 false, 1 true
-		doneCh := make(chan struct{})
-		peerConnection.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
-			if state == webrtc.PeerConnectionStateClosed || state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateDisconnected {
-				select {
-				case <-doneCh:
-				default:
-					close(doneCh)
-				}
-			}
-		})
-		go func() {
-			ticker := time.NewTicker(40 * time.Millisecond)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-ticker.C:
-					if atomic.LoadInt32(&speaking) == 1 && sess.IsSpeaking() {
-						if transcriptionService.RecentlyDetectedVoice(150 * time.Millisecond) {
-							log.Printf("[%s] barge-in: canceling TTS (VAD)", callID)
-							sess.BargeIn()
-							paced.Reset()
-							atomic.StoreInt32(&speaking, 0)
-						}
-					}
-				case <-doneCh:
-					return
-				}
-			}
-		}()
+		// Removed legacy VAD-only barge ticker; replaced by fusion engine events
 
 		if err := transcriptionService.Connect(); err != nil {
 			log.Printf("[%s] Failed to connect to AssemblyAI (assistant replies disabled): %v", callID, err)
@@ -284,22 +274,7 @@ func (h *Handler) HandleOffer(ctx context.Context, offer SessionDescription) (Se
 			if err != nil {
 				log.Printf("[%s] session start error: %v", callID, err)
 			}
-			go func() {
-				t := time.NewTicker(20 * time.Millisecond)
-				defer t.Stop()
-				for {
-					select {
-					case <-ctxSess.Done():
-						return
-					case <-t.C:
-						if sess.IsSpeaking() {
-							atomic.StoreInt32(&speaking, 1)
-						} else {
-							atomic.StoreInt32(&speaking, 0)
-						}
-					}
-				}
-			}()
+			// speaking state is tracked inside session and signaled to barge engine from session
 			peerConnection.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 				if state == webrtc.PeerConnectionStateClosed || state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateDisconnected {
 					cancelSess()

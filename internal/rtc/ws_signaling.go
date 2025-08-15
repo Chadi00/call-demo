@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 
 	"github.com/chadiek/call-demo/internal/agent"
+	"github.com/chadiek/call-demo/internal/barge"
 	"github.com/chadiek/call-demo/internal/llm"
 	"github.com/chadiek/call-demo/internal/transcript"
 	"github.com/chadiek/call-demo/internal/tts"
@@ -319,6 +320,20 @@ func (h *Handler) attachMediaHandlers(callID string, peerConnection *webrtc.Peer
 			return
 		}
 
+		be := barge.NewEngine(barge.DefaultWebRTCHeadset(), barge.Events{
+			OnTTSStop: func(ts time.Time) {
+				if s := sessPtr.Load(); s != nil {
+					(*s).BargeIn()
+				}
+				if p := pacedPtr.Load(); p != nil {
+					(*p).Reset()
+				}
+			},
+			OnTrigger: func(ts time.Time, cues barge.Cues, pre []byte) {
+				_ = transcriptionService.SendPCM16KLE(pre)
+			},
+		})
+
 		sess := agent.NewSession(
 			transcriptionService,
 			llmClient,
@@ -330,7 +345,7 @@ func (h *Handler) attachMediaHandlers(callID string, peerConnection *webrtc.Peer
 					log.Printf("[%s] SPOKEN assistant: %s", callID, assistantSpoken)
 				}
 			},
-		)
+		).WithBargeEngine(be)
 		sessPtr.Store(sess)
 		ctxSess, cancelSess := context.WithCancel(context.Background())
 		stop, err := sess.Start(ctxSess)
@@ -379,6 +394,7 @@ func (h *Handler) attachMediaHandlers(callID string, peerConnection *webrtc.Peer
 				for len(pcm16kBuf) >= 3200 {
 					chunk := pcm16kBuf[:3200]
 					_ = transcriptionService.SendPCM16KLE(chunk)
+					be.FeedMic16k(chunk)
 					copy(pcm16kBuf, pcm16kBuf[3200:])
 					pcm16kBuf = pcm16kBuf[:len(pcm16kBuf)-3200]
 				}

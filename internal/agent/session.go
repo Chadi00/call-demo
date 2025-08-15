@@ -46,6 +46,7 @@ type Session struct {
 	llm          LLM
 	tts          TTS
 	sink         PCM48kSink
+	barge        BargeEngine
 	onTranscript func(text string)
 	onTurn       func(user string, assistantSpoken string)
 
@@ -81,7 +82,9 @@ func (s *Session) buildConversationPrompt(latestUser string) string {
 func (s *Session) appendExchange(user, assistant string) {
 	s.mu.Lock()
 	s.history = append(s.history, convTurn{Role: "USER", Text: user})
-	s.history = append(s.history, convTurn{Role: "ASSISTANT", Text: assistant})
+	if strings.TrimSpace(assistant) != "" {
+		s.history = append(s.history, convTurn{Role: "ASSISTANT", Text: assistant})
+	}
 	s.mu.Unlock()
 }
 
@@ -90,6 +93,12 @@ func NewSession(t Transcriber, llm LLM, tts TTS, sink PCM48kSink, onTranscript f
 		sink = nopSink{}
 	}
 	return &Session{transcriber: t, llm: llm, tts: tts, sink: sink, onTranscript: onTranscript, onTurn: onTurn}
+}
+
+// WithBargeEngine injects a barge-in engine cooperation layer.
+func (s *Session) WithBargeEngine(be BargeEngine) *Session {
+	s.barge = be
+	return s
 }
 
 func (s *Session) Start(ctx context.Context) (func(), error) {
@@ -108,6 +117,9 @@ func (s *Session) Start(ctx context.Context) (func(), error) {
 				}
 				if s.onTranscript != nil && t != "" {
 					s.onTranscript(t)
+				}
+				if s.barge != nil && t != "" {
+					s.barge.NotifyPartial(t)
 				}
 			}
 		}
@@ -148,13 +160,16 @@ func (s *Session) Start(ctx context.Context) (func(), error) {
 				if reply == "" {
 					continue
 				}
-				s.appendExchange(prompt, reply)
+				// we append to history later only what was spoken
 				ctxTTS, cancelTTS := context.WithCancel(ctx)
 				s.mu.Lock()
 				s.speaking = true
 				s.ttsCancel = cancelTTS
 				s.bargeInRequested = false
 				s.mu.Unlock()
+				if s.barge != nil {
+					s.barge.SetSpeaking(true)
+				}
 
 				var spokenBuilder strings.Builder
 				chunks := chunkReply(reply)
@@ -169,6 +184,10 @@ func (s *Session) Start(ctx context.Context) (func(), error) {
 
 					pcmCh, errCh := s.tts.StreamPCM48k(ctxTTS, chunk)
 					openPCM, openErr := true, true
+					if s.barge != nil {
+						s.barge.NotifyTTSText(chunk)
+					}
+					playedChunk := false
 					for openPCM || openErr {
 						select {
 						case b, ok := <-pcmCh:
@@ -179,6 +198,10 @@ func (s *Session) Start(ctx context.Context) (func(), error) {
 									s.mu.Unlock()
 									if !drop {
 										s.sink.WritePCM(b)
+										playedChunk = true
+										if s.barge != nil {
+											s.barge.FeedTTS48k(b)
+										}
 									}
 								}
 							} else {
@@ -196,12 +219,12 @@ func (s *Session) Start(ctx context.Context) (func(), error) {
 					s.mu.Lock()
 					barged = s.bargeInRequested
 					s.mu.Unlock()
-					if !barged {
+					if !barged && playedChunk {
 						spokenBuilder.WriteString(strings.TrimSpace(chunk))
 						if i < len(chunks)-1 {
 							spokenBuilder.WriteString(" ")
 						}
-					} else {
+					} else if barged {
 						break CHUNK_LOOP
 					}
 				}
@@ -213,20 +236,25 @@ func (s *Session) Start(ctx context.Context) (func(), error) {
 				s.bargeInRequested = false
 				s.mu.Unlock()
 				cancelTTS()
+				if s.barge != nil {
+					s.barge.SetSpeaking(false)
+				}
 				if !wasBarged {
 					s.sink.FlushTail()
 				}
 
-				spokenText := strings.TrimSpace(spokenBuilder.String())
-				if wasBarged {
-					if len(spokenText) > 0 {
-						spokenText = spokenText + " [INTERUPTED BY USER]"
-					} else {
-						spokenText = "[INTERUPTED BY USER]"
-					}
+				spokenOnly := strings.TrimSpace(spokenBuilder.String())
+				// Update conversation context only with what was actually spoken
+				s.appendExchange(prompt, spokenOnly)
+
+				display := spokenOnly
+				if wasBarged && display == "" {
+					display = "[INTERRUPTED BY USER]"
+				} else if wasBarged && display != "" {
+					display = display + " [INTERRUPTED BY USER]"
 				}
 				if s.onTurn != nil {
-					s.onTurn(prompt, spokenText)
+					s.onTurn(prompt, display)
 				}
 			}
 		}
